@@ -47,7 +47,9 @@ def _signal_cleanup(signum: int, _frame: object) -> None:
 
 
 # SIGINT is already KeyboardInterrupt in Python, but SIGTERM needs a handler.
-signal.signal(signal.SIGTERM, _signal_cleanup)
+# On Windows SIGTERM is never delivered externally, so skip registration.
+if sys.platform != "win32":
+    signal.signal(signal.SIGTERM, _signal_cleanup)
 
 _DELTA_PREFIX = "d:"
 
@@ -608,17 +610,43 @@ def _get_key_unix() -> str:
     return ch
 
 
-def _get_key_win() -> str:
-    """Read a single keypress on Windows via msvcrt."""
+if sys.platform == "win32":
     import msvcrt
-    ch = msvcrt.getwch()  # type: ignore[attr-defined]
-    if ch in ("\x00", "\xe0"):
-        # Extended key — read second byte but we don't use arrow keys
-        msvcrt.getwch()  # type: ignore[attr-defined]
-        return ""
-    if ch == "\x1b":
-        return "\x1b"
-    return ch
+
+    def _get_key_win() -> str:
+        """Read a single keypress on Windows via msvcrt."""
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):
+            # Extended key — read second byte but we don't use arrow keys
+            msvcrt.getwch()
+            return ""
+        if ch == "\x1b":
+            return "\x1b"
+        return ch
+
+    def _jog_loop_terminal_win(
+        robot: DSR2Robot,
+        joints: list[float],
+        posx: list[float],
+        joint_step_sizes: list[float],
+        task_step_sizes: list[float],
+        joint_step_idx: int,
+        task_step_idx: int,
+        selected_axis: int,
+        task_mode: bool,
+    ) -> None:
+        # msvcrt.getwch() already reads single keys without echo — no raw mode needed.
+        accepted = _jog_terminal_mainloop(
+            robot, joints, posx,
+            joint_step_sizes, task_step_sizes,
+            joint_step_idx, task_step_idx,
+            selected_axis, task_mode,
+            _get_key_win,
+        )
+        if accepted:
+            _jog_print_result(joints, posx)
+        else:
+            print("\nCancelled.")
 
 
 def _jog_loop_terminal(
@@ -733,31 +761,6 @@ def _jog_loop_terminal_unix(
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-    if accepted:
-        _jog_print_result(joints, posx)
-    else:
-        print("\nCancelled.")
-
-
-def _jog_loop_terminal_win(
-    robot: DSR2Robot,
-    joints: list[float],
-    posx: list[float],
-    joint_step_sizes: list[float],
-    task_step_sizes: list[float],
-    joint_step_idx: int,
-    task_step_idx: int,
-    selected_axis: int,
-    task_mode: bool,
-) -> None:
-    # msvcrt.getwch() already reads single keys without echo — no raw mode needed.
-    accepted = _jog_terminal_mainloop(
-        robot, joints, posx,
-        joint_step_sizes, task_step_sizes,
-        joint_step_idx, task_step_idx,
-        selected_axis, task_mode,
-        _get_key_win,
-    )
     if accepted:
         _jog_print_result(joints, posx)
     else:
