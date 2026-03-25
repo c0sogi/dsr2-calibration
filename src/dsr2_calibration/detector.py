@@ -91,23 +91,44 @@ def calibrate_camera(
             continue
         corners, ids = result
         obj_pts, img_pts = detector.board.matchImagePoints(corners, ids)  # type: ignore[arg-type]
-        if len(obj_pts) >= 4:
+        if len(obj_pts) >= 6:
             all_obj.append(obj_pts)
             all_img.append(img_pts)
 
     if len(all_obj) < 3:
-        raise ValueError(f"Need ≥3 valid detections, got {len(all_obj)}")
+        raise ValueError(
+            f"Need ≥3 valid detections (≥6 corners each), got {len(all_obj)}"
+        )
 
     if image_size is None:
         h, w = images[0].shape[:2]
         image_size = (w, h)
 
     _no_mat = cast(np.ndarray, None)
-    rms, K, D, _, _ = cv2.calibrateCamera(
-        all_obj,
-        all_img,
-        image_size,
-        _no_mat,
-        _no_mat,
-    )
+    try:
+        rms, K, D, _, _ = cv2.calibrateCamera(
+            all_obj,
+            all_img,
+            image_size,
+            _no_mat,
+            _no_mat,
+        )
+    except cv2.error:
+        # initIntrinsicParams2D can fail when corners are sparse or
+        # nearly collinear.  Fall back to a rough focal-length guess
+        # so OpenCV skips its own homography-based initialisation.
+        w, h = image_size
+        f = float(max(w, h))
+        K0 = np.array([[f, 0, w / 2.0],
+                        [0, f, h / 2.0],
+                        [0, 0, 1.0]], dtype=np.float64)
+        D0 = np.zeros((5, 1), dtype=np.float64)
+        rms, K, D, _, _ = cv2.calibrateCamera(
+            all_obj,
+            all_img,
+            image_size,
+            K0,
+            D0,
+            flags=cv2.CALIB_USE_INTRINSIC_GUESS,
+        )
     return K.astype(np.float64, copy=False), D.astype(np.float64, copy=False), rms

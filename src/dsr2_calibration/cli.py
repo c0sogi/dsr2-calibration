@@ -327,6 +327,275 @@ def cmd_calibrate_transform(args: argparse.Namespace) -> None:
     print(f"Saved {args.output}")
 
 
+_JOINT_LABELS = ["J1", "J2", "J3", "J4", "J5", "J6"]
+_TASK_LABELS = ["X", "Y", "Z", "W", "P", "R"]
+_TASK_UNITS = ["mm", "mm", "mm", "deg", "deg", "deg"]
+
+
+def _jog_print_state(
+    task_mode: bool, selected_axis: int, step: float,
+    joints: list[float], posx: list[float],
+) -> None:
+    """Print current jog state to terminal."""
+    mode_text = "TASK" if task_mode else "JOINT"
+    step_unit = "mm/deg" if task_mode else "deg"
+    labels = _TASK_LABELS if task_mode else _JOINT_LABELS
+    units = _TASK_UNITS if task_mode else ["deg"] * 6
+    values = posx if task_mode else joints
+
+    print(f"\033[2J\033[H", end="")  # clear screen
+    print(f"=== Jog Mode [{mode_text}] ===  Step: {step:.1f} {step_unit}\n")
+    for i in range(6):
+        marker = " >" if i == selected_axis else "  "
+        print(f"{marker} {labels[i]}: {values[i]:+8.2f} {units[i]}")
+    print()
+    if task_mode:
+        print(f"  J: [{', '.join(f'{v:.1f}' for v in joints)}]")
+    else:
+        print(f"  X:{posx[0]:.1f} Y:{posx[1]:.1f} Z:{posx[2]:.1f}"
+              f"  W:{posx[3]:.1f} P:{posx[4]:.1f} R:{posx[5]:.1f}")
+    print("\n[Tab] joint/task  [1-6] axis  [a/d] jog  [w/s] step"
+          "  [Enter] accept  [Esc] cancel")
+
+
+def cmd_jog(args: argparse.Namespace) -> None:
+    """Interactive jog mode: move robot with keyboard while watching camera."""
+    use_camera = args.camera is not None
+
+    if use_camera:
+        board = _board_from_args(args)
+        detector = BoardDetector(board)
+        capture_fn, cap = _make_capture(args.camera)
+    else:
+        import tty
+        import termios
+
+    joint_step_sizes = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+    task_step_sizes = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+    joint_step_idx = 2   # 2.0 deg
+    task_step_idx = 3    # 5.0 mm/deg
+
+    selected_axis = 0    # 0-based index
+    task_mode = False     # False=joint, True=task space
+
+    with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+        joints = _resolve_center_joints(args, robot)
+        posx = robot.get_posx()
+
+        if use_camera:
+            _jog_loop_camera(
+                args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
+                joints, posx,
+                joint_step_sizes, task_step_sizes,
+                joint_step_idx, task_step_idx,
+                selected_axis, task_mode,
+            )
+        else:
+            _jog_loop_terminal(
+                robot, joints, posx,
+                joint_step_sizes, task_step_sizes,
+                joint_step_idx, task_step_idx,
+                selected_axis, task_mode,
+            )
+
+
+def _jog_loop_camera(
+    args: argparse.Namespace,
+    robot: DSR2Robot,
+    detector: BoardDetector,
+    capture_fn,
+    cap,
+    joints: list[float],
+    posx: list[float],
+    joint_step_sizes: list[float],
+    task_step_sizes: list[float],
+    joint_step_idx: int,
+    task_step_idx: int,
+    selected_axis: int,
+    task_mode: bool,
+) -> None:
+    print("=== Jog Mode (camera) ===")
+    print("Tab: joint/task | 1-6: select axis | a/d: jog -/+ | w/s: step")
+    print("Enter: accept pose | Esc: cancel\n")
+
+    while True:
+        frame = capture_fn()
+        result = detector.detect(frame)
+
+        h_img, w_img = frame.shape[:2]
+        if result is not None:
+            corners, ids = result
+            cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
+            det_text = f"Detected: {len(ids)} corners"
+            det_color = (0, 255, 0)
+        else:
+            det_text = "Board not detected"
+            det_color = (0, 0, 255)
+
+        if task_mode:
+            labels, units, values = _TASK_LABELS, _TASK_UNITS, posx
+            step = task_step_sizes[task_step_idx]
+            mode_text, step_unit = "TASK", "mm/deg"
+        else:
+            labels, units, values = _JOINT_LABELS, ["deg"] * 6, joints
+            step = joint_step_sizes[joint_step_idx]
+            mode_text, step_unit = "JOINT", "deg"
+
+        cv2.putText(frame, det_text,
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, det_color, 2)
+        cv2.putText(frame, f"[{mode_text}]  Step: {step:.1f} {step_unit}",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+        for i in range(6):
+            color = (0, 255, 255) if i == selected_axis else (200, 200, 200)
+            marker = ">" if i == selected_axis else " "
+            txt = f"{marker} {labels[i]}: {values[i]:+8.2f} {units[i]}"
+            cv2.putText(frame, txt,
+                        (10, 95 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
+
+        if task_mode:
+            sec = f"J:[{', '.join(f'{v:.1f}' for v in joints)}]"
+        else:
+            sec = (f"X:{posx[0]:.1f} Y:{posx[1]:.1f} Z:{posx[2]:.1f}  "
+                   f"W:{posx[3]:.1f} P:{posx[4]:.1f} R:{posx[5]:.1f}")
+        cv2.putText(frame, sec,
+                    (10, h_img - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+        cv2.putText(frame,
+                    "[Tab] joint/task  [1-6] axis  [a/d] jog  [w/s] step  [Enter] ok",
+                    (10, h_img - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+
+        cv2.imshow("dsr2-calibration jog", frame)
+        key = cv2.waitKey(50) & 0xFF
+
+        if key == 27:
+            print("Cancelled.")
+            cap.release()
+            cv2.destroyAllWindows()
+            return
+        elif key == 13 or key == ord("q"):
+            break
+        elif key == 9:
+            task_mode = not task_mode
+            selected_axis = 0
+        elif ord("1") <= key <= ord("6"):
+            selected_axis = key - ord("1")
+        elif key in (ord("a"), ord("d")):
+            sign = -1.0 if key == ord("a") else 1.0
+            if task_mode:
+                posx[selected_axis] += sign * step
+                robot.move_to_posx(posx)
+                joints[:] = robot.get_posj()
+            else:
+                joints[selected_axis] += sign * step
+                robot.move_to_joints(joints)
+                posx[:] = robot.get_posx()
+        elif key == ord("w"):
+            if task_mode:
+                task_step_idx = min(task_step_idx + 1, len(task_step_sizes) - 1)
+            else:
+                joint_step_idx = min(joint_step_idx + 1, len(joint_step_sizes) - 1)
+        elif key == ord("s"):
+            if task_mode:
+                task_step_idx = max(task_step_idx - 1, 0)
+            else:
+                joint_step_idx = max(joint_step_idx - 1, 0)
+
+    cap.release()
+    cv2.destroyAllWindows()
+    _jog_print_result(joints, posx)
+
+
+def _jog_loop_terminal(
+    robot: DSR2Robot,
+    joints: list[float],
+    posx: list[float],
+    joint_step_sizes: list[float],
+    task_step_sizes: list[float],
+    joint_step_idx: int,
+    task_step_idx: int,
+    selected_axis: int,
+    task_mode: bool,
+) -> None:
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    def _get_key() -> str:
+        """Read a single keypress (handles escape sequences)."""
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            seq = sys.stdin.read(1)
+            if seq == "[":
+                return "\x1b[" + sys.stdin.read(1)
+            return "\x1b"
+        return ch
+
+    try:
+        tty.setraw(fd)
+
+        step = joint_step_sizes[joint_step_idx]
+        _jog_print_state(task_mode, selected_axis, step, joints, posx)
+
+        while True:
+            step = (task_step_sizes[task_step_idx] if task_mode
+                    else joint_step_sizes[joint_step_idx])
+
+            key = _get_key()
+
+            if key == "\x1b":  # Esc
+                # Restore terminal before printing
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                print("\nCancelled.")
+                return
+            elif key in ("\r", "\n", "q"):  # Enter or q
+                break
+            elif key == "\t":  # Tab
+                task_mode = not task_mode
+                selected_axis = 0
+            elif key in "123456":
+                selected_axis = int(key) - 1
+            elif key in ("a", "d"):
+                sign = -1.0 if key == "a" else 1.0
+                if task_mode:
+                    posx[selected_axis] += sign * step
+                    robot.move_to_posx(posx)
+                    joints[:] = robot.get_posj()
+                else:
+                    joints[selected_axis] += sign * step
+                    robot.move_to_joints(joints)
+                    posx[:] = robot.get_posx()
+            elif key == "w":
+                if task_mode:
+                    task_step_idx = min(task_step_idx + 1, len(task_step_sizes) - 1)
+                else:
+                    joint_step_idx = min(joint_step_idx + 1, len(joint_step_sizes) - 1)
+            elif key == "s":
+                if task_mode:
+                    task_step_idx = max(task_step_idx - 1, 0)
+                else:
+                    joint_step_idx = max(joint_step_idx - 1, 0)
+            else:
+                continue
+
+            _jog_print_state(task_mode, selected_axis, step, joints, posx)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    _jog_print_result(joints, posx)
+
+
+def _jog_print_result(joints: list[float], posx: list[float]) -> None:
+    joints_str = ",".join(f"{v:.2f}" for v in joints)
+    posx_str = ",".join(f"{v:.1f}" for v in posx)
+    print(f"\nAccepted pose:")
+    print(f"  joints: {joints_str}")
+    print(f"  posx:   {posx_str}")
+    print(f"\nUse with calibrate:")
+    print(f"  dsr2-calibration calibrate -j {joints_str}")
+
+
 def cmd_calibrate(args: argparse.Namespace) -> None:
     from .calibration import HandEyeCalibrator, posx_to_matrix
 
@@ -439,6 +708,15 @@ def main() -> None:
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("-o", "--output", default="calibration_result.npz")
     p.set_defaults(func=cmd_calibrate_transform)
+
+    # jog
+    p = sub.add_parser("jog", help="Interactive jog mode to find a good center pose")
+    _add_board_args(p)
+    _add_pose_args(p)
+    _add_robot_args(p)
+    p.add_argument("--camera", type=int, default=None,
+                   help="camera ID (omit for terminal-only jog without camera)")
+    p.set_defaults(func=cmd_jog)
 
     # calibrate
     p = sub.add_parser("calibrate", help="Full auto-calibration (camera + transform)")
