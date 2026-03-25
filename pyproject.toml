@@ -1,0 +1,21 @@
+[project]
+name = "dsr2-calibration"
+version = "0.1.0"
+description = "Hand-eye calibration for Doosan A0509 using ChArUco boards"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "opencv-python>=4.13.0.92",
+]
+
+[dependency-groups]
+dev = [
+    "iruff>=0.1.0",
+    "pyright>=1.1.408",
+    "ruff>=0.15.7",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.1,<0.12"]
+build-backend = "uv_build"
