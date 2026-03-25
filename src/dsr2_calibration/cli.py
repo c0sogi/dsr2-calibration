@@ -136,10 +136,13 @@ def _make_capture(camera_id: int, retries: int = 3):
     else:
         if cap is not None:
             cap.release()
+        hint = "Try unplugging/replugging the camera."
+        if sys.platform == "linux":
+            hint += (" Or run 'sudo usbreset /dev/bus/usb/...' "
+                     "to reset the USB device.")
         sys.exit(
             f"Cannot open camera {camera_id} after {retries} attempts. "
-            "Try: unplugging/replugging the camera, or running "
-            "'sudo usbreset /dev/bus/usb/...' to reset the USB device."
+            + hint
         )
 
     _active_caps.append(cap)
@@ -408,6 +411,15 @@ _TASK_LABELS = ["X", "Y", "Z", "W", "P", "R"]
 _TASK_UNITS = ["mm", "mm", "mm", "deg", "deg", "deg"]
 
 
+def _clear_screen() -> None:
+    """Clear terminal screen (cross-platform)."""
+    if sys.platform == "win32":
+        import os
+        os.system("cls")
+    else:
+        print("\033[2J\033[H", end="")
+
+
 def _jog_print_state(
     task_mode: bool, selected_axis: int, step: float,
     joints: list[float], posx: list[float],
@@ -419,7 +431,7 @@ def _jog_print_state(
     units = _TASK_UNITS if task_mode else ["deg"] * 6
     values = posx if task_mode else joints
 
-    print(f"\033[2J\033[H", end="")  # clear screen
+    _clear_screen()
     print(f"=== Jog Mode [{mode_text}] ===  Step: {step:.1f} {step_unit}\n")
     for i in range(6):
         marker = " >" if i == selected_axis else "  "
@@ -585,7 +597,115 @@ def _jog_loop_camera(
     _jog_print_result(joints, posx)
 
 
+def _get_key_unix() -> str:
+    """Read a single keypress on Unix (handles escape sequences)."""
+    ch = sys.stdin.read(1)
+    if ch == "\x1b":
+        seq = sys.stdin.read(1)
+        if seq == "[":
+            return "\x1b[" + sys.stdin.read(1)
+        return "\x1b"
+    return ch
+
+
+def _get_key_win() -> str:
+    """Read a single keypress on Windows via msvcrt."""
+    import msvcrt
+    ch = msvcrt.getwch()  # type: ignore[attr-defined]
+    if ch in ("\x00", "\xe0"):
+        # Extended key — read second byte but we don't use arrow keys
+        msvcrt.getwch()  # type: ignore[attr-defined]
+        return ""
+    if ch == "\x1b":
+        return "\x1b"
+    return ch
+
+
 def _jog_loop_terminal(
+    robot: DSR2Robot,
+    joints: list[float],
+    posx: list[float],
+    joint_step_sizes: list[float],
+    task_step_sizes: list[float],
+    joint_step_idx: int,
+    task_step_idx: int,
+    selected_axis: int,
+    task_mode: bool,
+) -> None:
+    if sys.platform == "win32":
+        _jog_loop_terminal_win(
+            robot, joints, posx,
+            joint_step_sizes, task_step_sizes,
+            joint_step_idx, task_step_idx,
+            selected_axis, task_mode,
+        )
+    else:
+        _jog_loop_terminal_unix(
+            robot, joints, posx,
+            joint_step_sizes, task_step_sizes,
+            joint_step_idx, task_step_idx,
+            selected_axis, task_mode,
+        )
+
+
+def _jog_terminal_mainloop(
+    robot: DSR2Robot,
+    joints: list[float],
+    posx: list[float],
+    joint_step_sizes: list[float],
+    task_step_sizes: list[float],
+    joint_step_idx: int,
+    task_step_idx: int,
+    selected_axis: int,
+    task_mode: bool,
+    get_key_fn,
+) -> bool:
+    """Shared jog loop logic. Returns True if accepted, False if cancelled."""
+    step = joint_step_sizes[joint_step_idx]
+    _jog_print_state(task_mode, selected_axis, step, joints, posx)
+
+    while True:
+        step = (task_step_sizes[task_step_idx] if task_mode
+                else joint_step_sizes[joint_step_idx])
+
+        key = get_key_fn()
+
+        if key == "\x1b":  # Esc
+            return False
+        elif key in ("\r", "\n", "q"):  # Enter or q
+            return True
+        elif key == "\t":  # Tab
+            task_mode = not task_mode
+            selected_axis = 0
+        elif key in "123456":
+            selected_axis = int(key) - 1
+        elif key in ("a", "d"):
+            sign = -1.0 if key == "a" else 1.0
+            if task_mode:
+                posx[selected_axis] += sign * step
+                robot.move_to_posx(posx)
+                joints[:] = robot.get_posj()
+            else:
+                joints[selected_axis] += sign * step
+                robot.move_to_joints(joints)
+                posx[:] = robot.get_posx()
+        elif key == "w":
+            if task_mode:
+                task_step_idx = min(task_step_idx + 1, len(task_step_sizes) - 1)
+            else:
+                joint_step_idx = min(joint_step_idx + 1, len(joint_step_sizes) - 1)
+        elif key == "s":
+            if task_mode:
+                task_step_idx = max(task_step_idx - 1, 0)
+            else:
+                joint_step_idx = max(joint_step_idx - 1, 0)
+        else:
+            continue
+
+        _jog_print_state(task_mode, selected_axis, step, joints, posx)
+
+
+def _jog_loop_terminal_unix(
     robot: DSR2Robot,
     joints: list[float],
     posx: list[float],
@@ -601,69 +721,47 @@ def _jog_loop_terminal(
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
-
-    def _get_key() -> str:
-        """Read a single keypress (handles escape sequences)."""
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":
-            seq = sys.stdin.read(1)
-            if seq == "[":
-                return "\x1b[" + sys.stdin.read(1)
-            return "\x1b"
-        return ch
-
     try:
         tty.setraw(fd)
-
-        step = joint_step_sizes[joint_step_idx]
-        _jog_print_state(task_mode, selected_axis, step, joints, posx)
-
-        while True:
-            step = (task_step_sizes[task_step_idx] if task_mode
-                    else joint_step_sizes[joint_step_idx])
-
-            key = _get_key()
-
-            if key == "\x1b":  # Esc
-                # Restore terminal before printing
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                print("\nCancelled.")
-                return
-            elif key in ("\r", "\n", "q"):  # Enter or q
-                break
-            elif key == "\t":  # Tab
-                task_mode = not task_mode
-                selected_axis = 0
-            elif key in "123456":
-                selected_axis = int(key) - 1
-            elif key in ("a", "d"):
-                sign = -1.0 if key == "a" else 1.0
-                if task_mode:
-                    posx[selected_axis] += sign * step
-                    robot.move_to_posx(posx)
-                    joints[:] = robot.get_posj()
-                else:
-                    joints[selected_axis] += sign * step
-                    robot.move_to_joints(joints)
-                    posx[:] = robot.get_posx()
-            elif key == "w":
-                if task_mode:
-                    task_step_idx = min(task_step_idx + 1, len(task_step_sizes) - 1)
-                else:
-                    joint_step_idx = min(joint_step_idx + 1, len(joint_step_sizes) - 1)
-            elif key == "s":
-                if task_mode:
-                    task_step_idx = max(task_step_idx - 1, 0)
-                else:
-                    joint_step_idx = max(joint_step_idx - 1, 0)
-            else:
-                continue
-
-            _jog_print_state(task_mode, selected_axis, step, joints, posx)
+        accepted = _jog_terminal_mainloop(
+            robot, joints, posx,
+            joint_step_sizes, task_step_sizes,
+            joint_step_idx, task_step_idx,
+            selected_axis, task_mode,
+            _get_key_unix,
+        )
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-    _jog_print_result(joints, posx)
+    if accepted:
+        _jog_print_result(joints, posx)
+    else:
+        print("\nCancelled.")
+
+
+def _jog_loop_terminal_win(
+    robot: DSR2Robot,
+    joints: list[float],
+    posx: list[float],
+    joint_step_sizes: list[float],
+    task_step_sizes: list[float],
+    joint_step_idx: int,
+    task_step_idx: int,
+    selected_axis: int,
+    task_mode: bool,
+) -> None:
+    # msvcrt.getwch() already reads single keys without echo — no raw mode needed.
+    accepted = _jog_terminal_mainloop(
+        robot, joints, posx,
+        joint_step_sizes, task_step_sizes,
+        joint_step_idx, task_step_idx,
+        selected_axis, task_mode,
+        _get_key_win,
+    )
+    if accepted:
+        _jog_print_result(joints, posx)
+    else:
+        print("\nCancelled.")
 
 
 def _jog_print_result(joints: list[float], posx: list[float]) -> None:
