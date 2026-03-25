@@ -33,7 +33,7 @@ def main(robot_id: str = "dsr01", robot_model: str = "a0509") -> None:
     DR_init.__dsr__id = robot_id
     DR_init.__dsr__model = robot_model
     rclpy.init()
-    node = rclpy.create_node("calibration_bridge", namespace=robot_id)
+    node = rclpy.create_node("calibration_bridge")
     DR_init.__dsr__node = node
 
     from DSR_ROBOT2 import (  # type: ignore[import-not-found]
