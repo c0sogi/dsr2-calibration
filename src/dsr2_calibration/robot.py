@@ -31,7 +31,7 @@ class DSR2Robot:
 
     def __init__(
         self,
-        container: str = "ros-control",
+        container: str = "ros-control-real",
         robot_id: str = "dsr01",
         robot_model: str = "a0509",
         vel: float = 30.0,

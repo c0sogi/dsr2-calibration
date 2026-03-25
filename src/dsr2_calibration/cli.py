@@ -66,7 +66,7 @@ def _add_pose_args(p: argparse.ArgumentParser, required: bool = False) -> None:
 
 def _add_robot_args(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("robot")
-    g.add_argument("--container", default="ros-control", help="Docker container name")
+    g.add_argument("--container", default="ros-control-real", help="Docker container name")
     g.add_argument("--vel", type=float, default=30.0,
                    help="joint velocity in deg/s (default: 30)")
     g.add_argument("--acc", type=float, default=30.0,

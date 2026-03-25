@@ -123,7 +123,7 @@ dsr2-calibration calibrate --square-length 0.038 --marker-length 0.028
 | `-x` / `--posx` | (현재 위치) | center pose Cartesian (ZYZ Euler) |
 | `-n` / `--n-poses` | `20` | 캘리브레이션 포즈 수 |
 | `-o` / `--output` | `calibration_result.npz` | 출력 파일 경로 |
-| `--container` | `ros-control` | Docker 컨테이너 이름 |
+| `--container` | `ros-control-real` | Docker 컨테이너 이름 |
 | `--camera` | `0` | OpenCV 카메라 ID |
 | `--vel` | `30` | 관절 속도 (deg/s) |
 | `--acc` | `30` | 관절 가속도 (deg/s^2) |
@@ -150,7 +150,7 @@ from dsr2_calibration import (
 )
 
 # 로봇 연결
-with DSR2Robot(container="ros-control") as robot:
+with DSR2Robot(container="ros-control-real") as robot:
     posx = robot.get_posx()  # [x, y, z, w, p, r]
     T = robot.get_pose_matrix()  # 4x4 변환행렬
     robot.move_to_joints([0, 0, 90, 0, 90, 0])
