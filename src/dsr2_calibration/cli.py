@@ -469,29 +469,24 @@ def cmd_jog(args: argparse.Namespace) -> None:
 
     try:
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
-            initial_joints = robot.get_posj()
             joints = _resolve_center_joints(args, robot)
             posx = robot.get_posx()
 
-            try:
-                if use_camera:
-                    _jog_loop_camera(
-                        args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
-                        joints, posx,
-                        joint_step_sizes, task_step_sizes,
-                        joint_step_idx, task_step_idx,
-                        selected_axis, task_mode,
-                    )
-                else:
-                    _jog_loop_terminal(
-                        robot, joints, posx,
-                        joint_step_sizes, task_step_sizes,
-                        joint_step_idx, task_step_idx,
-                        selected_axis, task_mode,
-                    )
-            finally:
-                print("Returning to initial position...")
-                robot.move_to_joints(initial_joints)
+            if use_camera:
+                _jog_loop_camera(
+                    args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
+                    joints, posx,
+                    joint_step_sizes, task_step_sizes,
+                    joint_step_idx, task_step_idx,
+                    selected_axis, task_mode,
+                )
+            else:
+                _jog_loop_terminal(
+                    robot, joints, posx,
+                    joint_step_sizes, task_step_sizes,
+                    joint_step_idx, task_step_idx,
+                    selected_axis, task_mode,
+                )
     finally:
         if cap is not None:
             _release_capture(cap)
