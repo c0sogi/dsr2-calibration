@@ -9,14 +9,13 @@ from typing import Callable
 
 import cv2
 import numpy as np
-from numpy import typing as npt
 
 from .detector import BoardDetector
 
 # ── Doosan posx helpers ──────────────────────────────────────────────
 
 
-def _zyz_to_rotmat(a_deg: float, b_deg: float, g_deg: float) -> npt.NDArray[np.float64]:
+def _zyz_to_rotmat(a_deg: float, b_deg: float, g_deg: float) -> np.ndarray:
     """Intrinsic ZYZ Euler angles (degrees) → 3×3 rotation matrix."""
     a, b, g = np.radians([a_deg, b_deg, g_deg])
     ca, sa = np.cos(a), np.sin(a)
@@ -29,7 +28,7 @@ def _zyz_to_rotmat(a_deg: float, b_deg: float, g_deg: float) -> npt.NDArray[np.f
     ])
 
 
-def posx_to_matrix(posx: list[float] | npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def posx_to_matrix(posx: list[float] | np.ndarray) -> np.ndarray:
     """Convert Doosan ``posx [x,y,z,w,p,r]`` to a 4×4 matrix.
 
     * x/y/z in **mm** → converted to **meters**.
@@ -47,7 +46,7 @@ def posx_to_matrix(posx: list[float] | npt.NDArray[np.float64]) -> npt.NDArray[n
 
 @dataclass
 class CalibrationResult:
-    T_cam2gripper: npt.NDArray[np.float64]  # 4×4
+    T_cam2gripper: np.ndarray  # 4×4
     n_samples: int = 0
     rms: float | None = None
 
@@ -79,16 +78,16 @@ class HandEyeCalibrator:
     def __init__(
         self,
         detector: BoardDetector,
-        camera_matrix: npt.NDArray[np.float64],
-        dist_coeffs: npt.NDArray[np.float64],
+        camera_matrix: np.ndarray,
+        dist_coeffs: np.ndarray,
     ) -> None:
         self.detector = detector
         self.K = camera_matrix
         self.D = dist_coeffs
-        self._Rg: list[npt.NDArray[np.float64]] = []
-        self._tg: list[npt.NDArray[np.float64]] = []
-        self._Rt: list[npt.NDArray[np.float64]] = []
-        self._tt: list[npt.NDArray[np.float64]] = []
+        self._Rg: list[np.ndarray] = []
+        self._tg: list[np.ndarray] = []
+        self._Rt: list[np.ndarray] = []
+        self._tt: list[np.ndarray] = []
 
     @property
     def n_samples(self) -> int:
@@ -96,8 +95,8 @@ class HandEyeCalibrator:
 
     def add_sample(
         self,
-        image: npt.NDArray[np.uint8],
-        robot_pose: npt.NDArray[np.float64] | list[float],
+        image: np.ndarray,
+        robot_pose: np.ndarray | list[float],
     ) -> bool:
         """Add one sample. *robot_pose* is a 4×4 matrix **or** a ``posx`` list.
 
@@ -145,26 +144,44 @@ class HandEyeCalibrator:
 # ── Pose generation ──────────────────────────────────────────────────
 
 
+# Doosan A0509 joint limits (degrees)
+_A0509_JOINT_LIMITS: list[tuple[float, float]] = [
+    (-360, 360),   # J1
+    (-125, 125),   # J2
+    (-150, 150),   # J3
+    (-360, 360),   # J4
+    (-125, 125),   # J5
+    (-360, 360),   # J6
+]
+
+
 def generate_calibration_poses(
     center_joints: list[float],
-    n_poses: int = 15,
-    wrist_range: float = 15.0,
-    arm_range: float = 5.0,
+    n_poses: int = 20,
+    wrist_range: float = 20.0,
+    arm_range: float = 8.0,
     seed: int = 42,
+    joint_limits: list[tuple[float, float]] | None = None,
 ) -> list[list[float]]:
     """Generate *n_poses* joint configurations around *center_joints*.
 
     Wrist joints (4-6) are perturbed by ±*wrist_range*° and arm joints
     (1-3) by ±*arm_range*° to produce diverse camera viewpoints.
+    Poses that violate joint limits are discarded.
     """
+    limits = joint_limits or _A0509_JOINT_LIMITS
     rng = np.random.default_rng(seed)
     center = np.asarray(center_joints, dtype=float)
     poses: list[list[float]] = [center.tolist()]
-    while len(poses) < n_poses:
+    attempts = 0
+    while len(poses) < n_poses and attempts < n_poses * 10:
+        attempts += 1
         offset = np.zeros(6)
         offset[:3] = rng.uniform(-arm_range, arm_range, 3)
         offset[3:] = rng.uniform(-wrist_range, wrist_range, 3)
-        poses.append((center + offset).tolist())
+        candidate = center + offset
+        if all(lo <= j <= hi for j, (lo, hi) in zip(candidate, limits)):
+            poses.append(candidate.tolist())
     return poses
 
 
@@ -173,13 +190,13 @@ def generate_calibration_poses(
 
 def auto_calibrate(
     detector: BoardDetector,
-    camera_matrix: npt.NDArray[np.float64],
-    dist_coeffs: npt.NDArray[np.float64],
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
     calibration_joints: list[list[float]],
     move_fn: Callable[[list[float]], None],
-    get_pose_fn: Callable[[], list[float] | npt.NDArray[np.float64]],
-    capture_fn: Callable[[], npt.NDArray[np.uint8]],
-    settle_time: float = 0.5,
+    get_pose_fn: Callable[[], list[float] | np.ndarray],
+    capture_fn: Callable[[], np.ndarray],
+    settle_time: float = 1.0,
     method: int = cv2.CALIB_HAND_EYE_TSAI,
 ) -> CalibrationResult:
     """Fully-automated hand-eye calibration.

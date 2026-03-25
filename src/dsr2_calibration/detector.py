@@ -1,11 +1,10 @@
 """ChArUco board detection and camera intrinsic calibration."""
 
 from dataclasses import dataclass
-from typing import Sequence, cast
+from typing import cast
 
 import cv2
 import numpy as np
-from numpy import typing as npt
 
 
 @dataclass
@@ -36,25 +35,24 @@ class BoardDetector:
     # ------------------------------------------------------------------
 
     def detect(
-        self, image: npt.NDArray[np.uint8]
-    ) -> tuple[Sequence[npt.NDArray[np.float32]], npt.NDArray[np.int32]] | None:
+        self, image: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """Return *(charuco_corners, charuco_ids)* or ``None``."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         corners, ids, _, _ = self._detector.detectBoard(gray)
-        corners = cast(Sequence[npt.NDArray[np.float32]], corners)
-        if len(ids) < 4:
+        if ids is None or len(ids) < 4:
             return None
         return corners, ids.astype(np.int32, copy=False)
 
     def estimate_pose(
         self,
-        corners: Sequence[npt.NDArray[np.float32]],
-        ids: npt.NDArray[np.int32],
-        camera_matrix: npt.NDArray[np.float64],
-        dist_coeffs: npt.NDArray[np.float64],
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
+        corners: np.ndarray,
+        ids: np.ndarray,
+        camera_matrix: np.ndarray,
+        dist_coeffs: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """Estimate board pose → *(rvec, tvec)* or ``None``."""
-        obj_pts, img_pts = self.board.matchImagePoints(corners, ids)
+        obj_pts, img_pts = self.board.matchImagePoints(corners, ids)  # type: ignore[arg-type]
         if len(obj_pts) < 4:
             return None
         ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, camera_matrix, dist_coeffs)
@@ -62,16 +60,24 @@ class BoardDetector:
             return None
         return rvec.astype(np.float64, copy=False), tvec.astype(np.float64, copy=False)
 
-    def generate_image(self, width: int = 800, height: int = 1100) -> npt.NDArray[np.uint8]:
-        """Render a printable board image."""
+    def generate_image(self, dpi: int = 150) -> np.ndarray:
+        """Render a board image at exact physical scale.
+
+        When printed at *dpi* with 100% scaling (no "fit to page"),
+        the squares will measure exactly ``square_length`` meters.
+        """
+        cfg = self.config
+        m_to_px = dpi / 0.0254  # meters → pixels
+        width = int(cfg.cols * cfg.square_length * m_to_px)
+        height = int(cfg.rows * cfg.square_length * m_to_px)
         return self.board.generateImage((width, height)).astype(np.uint8, copy=False)
 
 
 def calibrate_camera(
     detector: BoardDetector,
-    images: list[npt.NDArray[np.uint8]],
+    images: list[np.ndarray],
     image_size: tuple[int, int] | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Calibrate camera intrinsics from ChArUco images.
 
     Returns *(camera_matrix, dist_coeffs, rms_error)*.
@@ -84,7 +90,7 @@ def calibrate_camera(
         if result is None:
             continue
         corners, ids = result
-        obj_pts, img_pts = detector.board.matchImagePoints(corners, ids)
+        obj_pts, img_pts = detector.board.matchImagePoints(corners, ids)  # type: ignore[arg-type]
         if len(obj_pts) >= 4:
             all_obj.append(obj_pts)
             all_img.append(img_pts)

@@ -9,12 +9,18 @@ dependencies = [
     "opencv-python>=4.13.0.92",
 ]
 
+[project.scripts]
+dsr2-calibration = "dsr2_calibration.cli:main"
+
 [dependency-groups]
 dev = [
     "iruff>=0.1.0",
     "pyright>=1.1.408",
     "ruff>=0.15.7",
 ]
+
+[tool.pyright]
+typeCheckingMode = "standard"
 
 [build-system]
 requires = ["uv_build>=0.11.1,<0.12"]

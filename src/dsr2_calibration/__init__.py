@@ -8,11 +8,13 @@ from .calibration import (
     posx_to_matrix,
 )
 from .detector import BoardConfig, BoardDetector, calibrate_camera
+from .robot import DSR2Robot
 
 __all__ = [
     "BoardConfig",
     "BoardDetector",
     "CalibrationResult",
+    "DSR2Robot",
     "HandEyeCalibrator",
     "auto_calibrate",
     "calibrate_camera",
