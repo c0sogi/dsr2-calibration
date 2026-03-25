@@ -12,6 +12,8 @@ Usage (with robot — Docker container must be running):
 from __future__ import annotations
 
 import argparse
+import atexit
+import signal
 import sys
 import time
 from pathlib import Path
@@ -22,6 +24,30 @@ import numpy as np
 from .calibration import auto_calibrate, generate_calibration_poses
 from .detector import BoardConfig, BoardDetector, calibrate_camera
 from .robot import DSR2Robot
+
+# Global camera registry for guaranteed cleanup on exit / signal.
+_active_caps: list[cv2.VideoCapture] = []
+
+
+def _cleanup_cameras() -> None:
+    for cap in _active_caps:
+        try:
+            cap.release()
+        except Exception:
+            pass
+    _active_caps.clear()
+
+
+atexit.register(_cleanup_cameras)
+
+
+def _signal_cleanup(signum: int, _frame: object) -> None:
+    _cleanup_cameras()
+    sys.exit(128 + signum)
+
+
+# SIGINT is already KeyboardInterrupt in Python, but SIGTERM needs a handler.
+signal.signal(signal.SIGTERM, _signal_cleanup)
 
 _DELTA_PREFIX = "d:"
 
@@ -79,20 +105,50 @@ def _add_robot_args(p: argparse.ArgumentParser) -> None:
                    help="arm joint perturbation in degrees (default: 8)")
 
 
-def _make_capture(camera_id: int):
-    cap = cv2.VideoCapture(camera_id)
-    if not cap.isOpened():
+def _release_capture(cap: cv2.VideoCapture) -> None:
+    """Release a capture and remove it from the global registry."""
+    try:
+        cap.release()
+    except Exception:
+        pass
+    try:
+        _active_caps.remove(cap)
+    except ValueError:
+        pass
+
+
+def _make_capture(camera_id: int, retries: int = 3):
+    cap: cv2.VideoCapture | None = None
+    for attempt in range(retries):
+        if cap is not None:
+            cap.release()
+            time.sleep(1.0)
+        cap = cv2.VideoCapture(camera_id)
+        if not cap.isOpened():
+            print(f"Camera {camera_id}: open failed (attempt {attempt + 1}/{retries})")
+            continue
+        # Validate with a real read — isOpened() alone can be a false positive.
+        ret, _ = cap.read()
+        if ret:
+            break
+        print(f"Camera {camera_id}: open ok but read failed "
+              f"(attempt {attempt + 1}/{retries})")
+    else:
+        if cap is not None:
+            cap.release()
         sys.exit(
-            f"Cannot open camera {camera_id}. "
-            "If using RealSense, try different --camera IDs (0, 1, 2, ...) "
-            "or check that the camera is connected."
+            f"Cannot open camera {camera_id} after {retries} attempts. "
+            "Try: unplugging/replugging the camera, or running "
+            "'sudo usbreset /dev/bus/usb/...' to reset the USB device."
         )
+
+    _active_caps.append(cap)
 
     def capture() -> np.ndarray:
         # Flush buffered frames to get the latest one
         for _ in range(5):
-            cap.grab()
-        ret, frame = cap.read()
+            cap.grab()  # type: ignore[union-attr]
+        ret, frame = cap.read()  # type: ignore[union-attr]
         if not ret:
             raise RuntimeError("Camera capture failed")
         return frame
@@ -142,28 +198,29 @@ def cmd_preview(args: argparse.Namespace) -> None:
     capture_fn, cap = _make_capture(args.camera)
 
     print("Press 'q' to quit.")
-    while True:
-        frame = capture_fn()
-        result = detector.detect(frame)
-        if result is not None:
-            corners, ids = result
-            cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
-            cv2.putText(
-                frame, f"Detected: {len(ids)} corners",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2,
-            )
-        else:
-            cv2.putText(
-                frame, "Board not detected",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
-            )
+    try:
+        while True:
+            frame = capture_fn()
+            result = detector.detect(frame)
+            if result is not None:
+                corners, ids = result
+                cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
+                cv2.putText(
+                    frame, f"Detected: {len(ids)} corners",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2,
+                )
+            else:
+                cv2.putText(
+                    frame, "Board not detected",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
+                )
 
-        cv2.imshow("dsr2-calibration preview", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+            cv2.imshow("dsr2-calibration preview", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        _release_capture(cap)
+        cv2.destroyAllWindows()
 
 
 def cmd_dry_run(args: argparse.Namespace) -> None:
@@ -175,57 +232,59 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
     safe_vel = min(args.vel, 10.0)
     safe_acc = min(args.acc, 10.0)
 
-    with DSR2Robot(container=args.container, vel=safe_vel, acc=safe_acc) as robot:
-        initial_joints = robot.get_posj()
-        center = _resolve_center_joints(args, robot)
-        poses = generate_calibration_poses(
-            center, n_poses=args.n_poses,
-            wrist_range=args.wrist_range, arm_range=args.arm_range,
-        )
+    try:
+        with DSR2Robot(container=args.container, vel=safe_vel, acc=safe_acc) as robot:
+            initial_joints = robot.get_posj()
+            center = _resolve_center_joints(args, robot)
+            poses = generate_calibration_poses(
+                center, n_poses=args.n_poses,
+                wrist_range=args.wrist_range, arm_range=args.arm_range,
+            )
 
-        print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
-        print("Watch the robot and camera feed. Press 'q' to abort.\n")
+            print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
+            print("Watch the robot and camera feed. Press 'q' to abort.\n")
 
-        try:
-            detected = 0
-            for i, joints in enumerate(poses):
-                robot.move_to_joints(joints)
-                time.sleep(args.settle_time)
+            try:
+                detected = 0
+                for i, joints in enumerate(poses):
+                    robot.move_to_joints(joints)
+                    time.sleep(args.settle_time)
 
-                frame = capture_fn()
-                result = detector.detect(frame)
-                posx = robot.get_posx()
+                    frame = capture_fn()
+                    result = detector.detect(frame)
+                    posx = robot.get_posx()
 
-                if result is not None:
-                    detected += 1
-                    corners, ids = result
-                    cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
-                    status = f"[{i + 1}/{len(poses)}] OK ({len(ids)} corners)"
-                    color = (0, 255, 0)
-                else:
-                    status = f"[{i + 1}/{len(poses)}] Board not visible"
-                    color = (0, 0, 255)
+                    if result is not None:
+                        detected += 1
+                        corners, ids = result
+                        cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
+                        status = f"[{i + 1}/{len(poses)}] OK ({len(ids)} corners)"
+                        color = (0, 255, 0)
+                    else:
+                        status = f"[{i + 1}/{len(poses)}] Board not visible"
+                        color = (0, 0, 255)
 
-                cv2.putText(frame, status, (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                cv2.putText(
-                    frame,
-                    f"posx: [{posx[0]:.0f}, {posx[1]:.0f}, {posx[2]:.0f}, "
-                    f"{posx[3]:.0f}, {posx[4]:.0f}, {posx[5]:.0f}]",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
-                )
-                cv2.imshow("dsr2-calibration dry-run", frame)
-                print(f"  {status}  posx=[{', '.join(f'{v:.1f}' for v in posx)}]")
+                    cv2.putText(frame, status, (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    cv2.putText(
+                        frame,
+                        f"posx: [{posx[0]:.0f}, {posx[1]:.0f}, {posx[2]:.0f}, "
+                        f"{posx[3]:.0f}, {posx[4]:.0f}, {posx[5]:.0f}]",
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                    )
+                    cv2.imshow("dsr2-calibration dry-run", frame)
+                    print(f"  {status}  posx=[{', '.join(f'{v:.1f}' for v in posx)}]")
 
-                if cv2.waitKey(500) & 0xFF == ord("q"):
-                    print("\nAborted by user.")
-                    break
-        finally:
-            print("Returning to initial position...")
-            robot.move_to_joints(initial_joints)
+                    if cv2.waitKey(500) & 0xFF == ord("q"):
+                        print("\nAborted by user.")
+                        break
+            finally:
+                print("Returning to initial position...")
+                robot.move_to_joints(initial_joints)
+    finally:
+        _release_capture(cap)
+        cv2.destroyAllWindows()
 
-    cap.release()
-    cv2.destroyAllWindows()
     print(f"\nResult: {detected}/{len(poses)} poses with board visible")
     if detected < 3:
         print("Not enough detections. Adjust board position or center pose.")
@@ -274,27 +333,29 @@ def cmd_calibrate_camera(args: argparse.Namespace) -> None:
     else:
         capture_fn, cap = _make_capture(args.camera)
         images = []
-        with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
-            initial_joints = robot.get_posj()
-            center = _resolve_center_joints(args, robot)
-            poses = generate_calibration_poses(
-                center, n_poses=args.n_images,
-                wrist_range=args.wrist_range, arm_range=args.arm_range,
-            )
-            try:
-                for i, joints in enumerate(poses):
-                    robot.move_to_joints(joints)
-                    time.sleep(args.settle_time)
-                    frame = capture_fn()
-                    if detector.detect(frame) is not None:
-                        images.append(frame)
-                        print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
-                    else:
-                        print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
-            finally:
-                print("Returning to initial position...")
-                robot.move_to_joints(initial_joints)
-        cap.release()
+        try:
+            with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+                initial_joints = robot.get_posj()
+                center = _resolve_center_joints(args, robot)
+                poses = generate_calibration_poses(
+                    center, n_poses=args.n_images,
+                    wrist_range=args.wrist_range, arm_range=args.arm_range,
+                )
+                try:
+                    for i, joints in enumerate(poses):
+                        robot.move_to_joints(joints)
+                        time.sleep(args.settle_time)
+                        frame = capture_fn()
+                        if detector.detect(frame) is not None:
+                            images.append(frame)
+                            print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
+                        else:
+                            print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
+                finally:
+                    print("Returning to initial position...")
+                    robot.move_to_joints(initial_joints)
+        finally:
+            _release_capture(cap)
 
     K, D, rms = calibrate_camera(detector, images)
     np.savez(args.output, K=K, D=D)
@@ -335,7 +396,7 @@ def cmd_calibrate_transform(args: argparse.Namespace) -> None:
                 print("Returning to initial position...")
                 robot.move_to_joints(initial_joints)
     finally:
-        cap.release()
+        _release_capture(cap)
 
     result.save(args.output)
     print(f"\nT_cam2gripper:\n{result.T_cam2gripper}")
@@ -418,7 +479,7 @@ def cmd_jog(args: argparse.Namespace) -> None:
                 robot.move_to_joints(initial_joints)
     finally:
         if cap is not None:
-            cap.release()
+            _release_capture(cap)
             cv2.destroyAllWindows()
 
 
@@ -649,7 +710,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                 print("Returning to initial position...")
                 robot.move_to_joints(initial_joints)
     finally:
-        cap.release()
+        _release_capture(cap)
 
     if len(images) < 3:
         sys.exit(
