@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+from datetime import datetime
 import signal
 import sys
 import threading
@@ -53,6 +54,15 @@ if sys.platform != "win32":
     signal.signal(signal.SIGTERM, _signal_cleanup)
 
 _DELTA_PREFIX = "d:"
+
+
+def _timestamped_name(base: str) -> str:
+    """Generate a filename with a timestamp, e.g. 'calibration_result_20260325_143012.npz'."""
+    stem, _, ext = base.rpartition(".")
+    if not stem:
+        stem, ext = ext, ""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{stem}_{ts}.{ext}" if ext else f"{stem}_{ts}"
 
 
 # -- helpers ---------------------------------------------------------------
@@ -942,7 +952,7 @@ def main() -> None:
     _add_robot_args(p)
     p.add_argument("-n", "--n-images", type=int, default=20)
     p.add_argument("--camera", type=int, default=0)
-    p.add_argument("-o", "--output", default="camera_intrinsics.npz")
+    p.add_argument("-o", "--output", default=_timestamped_name("camera_intrinsics.npz"))
     p.set_defaults(func=cmd_calibrate_camera)
 
     # calibrate-transform
@@ -953,7 +963,7 @@ def main() -> None:
     p.add_argument("-i", "--intrinsics", default="camera_intrinsics.npz")
     p.add_argument("-n", "--n-poses", type=int, default=15)
     p.add_argument("--camera", type=int, default=0)
-    p.add_argument("-o", "--output", default="calibration_result.npz")
+    p.add_argument("-o", "--output", default=_timestamped_name("calibration_result.npz"))
     p.set_defaults(func=cmd_calibrate_transform)
 
     # jog
@@ -972,7 +982,7 @@ def main() -> None:
     _add_robot_args(p)
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("-n", "--n-poses", type=int, default=20)
-    p.add_argument("-o", "--output", default="calibration_result.npz")
+    p.add_argument("-o", "--output", default=_timestamped_name("calibration_result.npz"))
     p.set_defaults(func=cmd_calibrate)
 
     args = parser.parse_args()
