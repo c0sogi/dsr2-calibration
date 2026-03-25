@@ -15,6 +15,7 @@ import argparse
 import atexit
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -516,6 +517,20 @@ def _jog_loop_camera(
     print("Tab: joint/task | 1-6: select axis | a/d: jog -/+ | w/s: step")
     print("Enter: accept pose | Esc: cancel\n")
 
+    moving = False
+    move_error: str | None = None
+
+    def _do_move(move_fn, move_arg, sync_fn, sync_target):
+        """Run a blocking move in a background thread."""
+        nonlocal moving, move_error
+        try:
+            move_fn(move_arg)
+            sync_target[:] = sync_fn()
+        except Exception as e:
+            move_error = str(e)
+        finally:
+            moving = False
+
     while True:
         frame = capture_fn()
         result = detector.detect(frame)
@@ -541,7 +556,11 @@ def _jog_loop_camera(
 
         cv2.putText(frame, det_text,
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, det_color, 2)
-        cv2.putText(frame, f"[{mode_text}]  Step: {step:.1f} {step_unit}",
+
+        status_text = f"[{mode_text}]  Step: {step:.1f} {step_unit}"
+        if moving:
+            status_text += "  ** Moving... **"
+        cv2.putText(frame, status_text,
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         for i in range(6):
@@ -565,6 +584,11 @@ def _jog_loop_camera(
         cv2.imshow("dsr2-calibration jog", frame)
         key = cv2.waitKey(50) & 0xFF
 
+        # Check for move errors from the background thread
+        if move_error is not None:
+            print(f"Move error: {move_error}")
+            move_error = None
+
         if key == 27:
             print("Cancelled.")
             return
@@ -575,16 +599,25 @@ def _jog_loop_camera(
             selected_axis = 0
         elif ord("1") <= key <= ord("6"):
             selected_axis = key - ord("1")
-        elif key in (ord("a"), ord("d")):
+        elif key in (ord("a"), ord("d")) and not moving:
             sign = -1.0 if key == ord("a") else 1.0
+            moving = True
             if task_mode:
                 posx[selected_axis] += sign * step
-                robot.move_to_posx(posx)
-                joints[:] = robot.get_posj()
+                threading.Thread(
+                    target=_do_move,
+                    args=(robot.move_to_posx, list(posx),
+                          robot.get_posj, joints),
+                    daemon=True,
+                ).start()
             else:
                 joints[selected_axis] += sign * step
-                robot.move_to_joints(joints)
-                posx[:] = robot.get_posx()
+                threading.Thread(
+                    target=_do_move,
+                    args=(robot.move_to_joints, list(joints),
+                          robot.get_posx, posx),
+                    daemon=True,
+                ).start()
         elif key == ord("w"):
             if task_mode:
                 task_step_idx = min(task_step_idx + 1, len(task_step_sizes) - 1)
