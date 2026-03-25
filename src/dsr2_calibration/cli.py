@@ -362,13 +362,11 @@ def cmd_jog(args: argparse.Namespace) -> None:
     """Interactive jog mode: move robot with keyboard while watching camera."""
     use_camera = args.camera is not None
 
+    cap = None
     if use_camera:
         board = _board_from_args(args)
         detector = BoardDetector(board)
         capture_fn, cap = _make_capture(args.camera)
-    else:
-        import tty
-        import termios
 
     joint_step_sizes = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
     task_step_sizes = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
@@ -378,25 +376,30 @@ def cmd_jog(args: argparse.Namespace) -> None:
     selected_axis = 0    # 0-based index
     task_mode = False     # False=joint, True=task space
 
-    with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
-        joints = _resolve_center_joints(args, robot)
-        posx = robot.get_posx()
+    try:
+        with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+            joints = _resolve_center_joints(args, robot)
+            posx = robot.get_posx()
 
-        if use_camera:
-            _jog_loop_camera(
-                args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
-                joints, posx,
-                joint_step_sizes, task_step_sizes,
-                joint_step_idx, task_step_idx,
+            if use_camera:
+                _jog_loop_camera(
+                    args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
+                    joints, posx,
+                    joint_step_sizes, task_step_sizes,
+                    joint_step_idx, task_step_idx,
+                    selected_axis, task_mode,
+                )
+            else:
+                _jog_loop_terminal(
+                    robot, joints, posx,
+                    joint_step_sizes, task_step_sizes,
+                    joint_step_idx, task_step_idx,
                 selected_axis, task_mode,
             )
-        else:
-            _jog_loop_terminal(
-                robot, joints, posx,
-                joint_step_sizes, task_step_sizes,
-                joint_step_idx, task_step_idx,
-                selected_axis, task_mode,
-            )
+    finally:
+        if cap is not None:
+            cap.release()
+            cv2.destroyAllWindows()
 
 
 def _jog_loop_camera(
@@ -469,8 +472,6 @@ def _jog_loop_camera(
 
         if key == 27:
             print("Cancelled.")
-            cap.release()
-            cv2.destroyAllWindows()
             return
         elif key == 13 or key == ord("q"):
             break
@@ -500,8 +501,6 @@ def _jog_loop_camera(
             else:
                 joint_step_idx = max(joint_step_idx - 1, 0)
 
-    cap.release()
-    cv2.destroyAllWindows()
     _jog_print_result(joints, posx)
 
 
