@@ -811,6 +811,14 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     board = _board_from_args(args)
     detector = BoardDetector(board)
     capture_fn, cap = _make_capture(args.camera)
+
+    # Check if GUI display is available
+    show_gui = True
+    try:
+        cv2.namedWindow("dsr2-calibration", cv2.WINDOW_AUTOSIZE)
+    except cv2.error:
+        show_gui = False
+
     try:
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
             initial_joints = robot.get_posj()
@@ -824,22 +832,47 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             print(f"Collecting data ({len(poses)} poses)...")
             images: list[np.ndarray] = []
             robot_poses: list[np.ndarray] = []
+            aborted = False
+
             try:
                 for i, joints in enumerate(poses):
                     robot.move_to_joints(joints)
                     time.sleep(args.settle_time)
                     frame = capture_fn()
-                    if detector.detect(frame) is not None:
+                    display = frame.copy()
+                    result = detector.detect(frame)
+                    if result is not None:
+                        corners, ids = result
                         images.append(frame)
                         robot_poses.append(posx_to_matrix(robot.get_posx()))
-                        print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
+                        status = f"[{i + 1}/{len(poses)}] detected ({len(images)} total)"
+                        if show_gui:
+                            cv2.aruco.drawDetectedCornersCharuco(display, corners, ids, (0, 255, 0))
+                            cv2.putText(display, status, (10, 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        print(f"  {status}")
                     else:
-                        print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
+                        status = f"[{i + 1}/{len(poses)}] board not found, skipped"
+                        if show_gui:
+                            cv2.putText(display, status, (10, 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        print(f"  {status}")
+                    if show_gui:
+                        cv2.imshow("dsr2-calibration", display)
+                        if cv2.waitKey(500) & 0xFF == ord("q"):
+                            print("\nAborted by user.")
+                            aborted = True
+                            break
             finally:
                 print("Returning to initial position...")
                 robot.move_to_joints(initial_joints)
     finally:
         _release_capture(cap)
+        if show_gui:
+            cv2.destroyAllWindows()
+
+    if aborted:
+        sys.exit("Calibration aborted.")
 
     if len(images) < 3:
         sys.exit(
