@@ -176,6 +176,7 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
     safe_acc = min(args.acc, 10.0)
 
     with DSR2Robot(container=args.container, vel=safe_vel, acc=safe_acc) as robot:
+        initial_joints = robot.get_posj()
         center = _resolve_center_joints(args, robot)
         poses = generate_calibration_poses(
             center, n_poses=args.n_poses,
@@ -185,39 +186,43 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
         print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
         print("Watch the robot and camera feed. Press 'q' to abort.\n")
 
-        detected = 0
-        for i, joints in enumerate(poses):
-            robot.move_to_joints(joints)
-            time.sleep(args.settle_time)
+        try:
+            detected = 0
+            for i, joints in enumerate(poses):
+                robot.move_to_joints(joints)
+                time.sleep(args.settle_time)
 
-            frame = capture_fn()
-            result = detector.detect(frame)
-            posx = robot.get_posx()
+                frame = capture_fn()
+                result = detector.detect(frame)
+                posx = robot.get_posx()
 
-            if result is not None:
-                detected += 1
-                corners, ids = result
-                cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
-                status = f"[{i + 1}/{len(poses)}] OK ({len(ids)} corners)"
-                color = (0, 255, 0)
-            else:
-                status = f"[{i + 1}/{len(poses)}] Board not visible"
-                color = (0, 0, 255)
+                if result is not None:
+                    detected += 1
+                    corners, ids = result
+                    cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
+                    status = f"[{i + 1}/{len(poses)}] OK ({len(ids)} corners)"
+                    color = (0, 255, 0)
+                else:
+                    status = f"[{i + 1}/{len(poses)}] Board not visible"
+                    color = (0, 0, 255)
 
-            cv2.putText(frame, status, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            cv2.putText(
-                frame,
-                f"posx: [{posx[0]:.0f}, {posx[1]:.0f}, {posx[2]:.0f}, "
-                f"{posx[3]:.0f}, {posx[4]:.0f}, {posx[5]:.0f}]",
-                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
-            )
-            cv2.imshow("dsr2-calibration dry-run", frame)
-            print(f"  {status}  posx=[{', '.join(f'{v:.1f}' for v in posx)}]")
+                cv2.putText(frame, status, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                cv2.putText(
+                    frame,
+                    f"posx: [{posx[0]:.0f}, {posx[1]:.0f}, {posx[2]:.0f}, "
+                    f"{posx[3]:.0f}, {posx[4]:.0f}, {posx[5]:.0f}]",
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                )
+                cv2.imshow("dsr2-calibration dry-run", frame)
+                print(f"  {status}  posx=[{', '.join(f'{v:.1f}' for v in posx)}]")
 
-            if cv2.waitKey(500) & 0xFF == ord("q"):
-                print("\nAborted by user.")
-                break
+                if cv2.waitKey(500) & 0xFF == ord("q"):
+                    print("\nAborted by user.")
+                    break
+        finally:
+            print("Returning to initial position...")
+            robot.move_to_joints(initial_joints)
 
     cap.release()
     cv2.destroyAllWindows()
@@ -270,20 +275,25 @@ def cmd_calibrate_camera(args: argparse.Namespace) -> None:
         capture_fn, cap = _make_capture(args.camera)
         images = []
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+            initial_joints = robot.get_posj()
             center = _resolve_center_joints(args, robot)
             poses = generate_calibration_poses(
                 center, n_poses=args.n_images,
                 wrist_range=args.wrist_range, arm_range=args.arm_range,
             )
-            for i, joints in enumerate(poses):
-                robot.move_to_joints(joints)
-                time.sleep(args.settle_time)
-                frame = capture_fn()
-                if detector.detect(frame) is not None:
-                    images.append(frame)
-                    print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
-                else:
-                    print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
+            try:
+                for i, joints in enumerate(poses):
+                    robot.move_to_joints(joints)
+                    time.sleep(args.settle_time)
+                    frame = capture_fn()
+                    if detector.detect(frame) is not None:
+                        images.append(frame)
+                        print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
+                    else:
+                        print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
+            finally:
+                print("Returning to initial position...")
+                robot.move_to_joints(initial_joints)
         cap.release()
 
     K, D, rms = calibrate_camera(detector, images)
@@ -304,21 +314,26 @@ def cmd_calibrate_transform(args: argparse.Namespace) -> None:
     capture_fn, cap = _make_capture(args.camera)
     try:
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+            initial_joints = robot.get_posj()
             center = _resolve_center_joints(args, robot)
             poses = generate_calibration_poses(
                 center, n_poses=args.n_poses,
                 wrist_range=args.wrist_range, arm_range=args.arm_range,
             )
-            result = auto_calibrate(
-                detector=detector,
-                camera_matrix=K,
-                dist_coeffs=D,
-                calibration_joints=poses,
-                move_fn=robot.move_to_joints,
-                get_pose_fn=robot.get_posx,
-                capture_fn=capture_fn,
-                settle_time=args.settle_time,
-            )
+            try:
+                result = auto_calibrate(
+                    detector=detector,
+                    camera_matrix=K,
+                    dist_coeffs=D,
+                    calibration_joints=poses,
+                    move_fn=robot.move_to_joints,
+                    get_pose_fn=robot.get_posx,
+                    capture_fn=capture_fn,
+                    settle_time=args.settle_time,
+                )
+            finally:
+                print("Returning to initial position...")
+                robot.move_to_joints(initial_joints)
     finally:
         cap.release()
 
@@ -378,24 +393,29 @@ def cmd_jog(args: argparse.Namespace) -> None:
 
     try:
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+            initial_joints = robot.get_posj()
             joints = _resolve_center_joints(args, robot)
             posx = robot.get_posx()
 
-            if use_camera:
-                _jog_loop_camera(
-                    args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
-                    joints, posx,
-                    joint_step_sizes, task_step_sizes,
-                    joint_step_idx, task_step_idx,
-                    selected_axis, task_mode,
-                )
-            else:
-                _jog_loop_terminal(
-                    robot, joints, posx,
-                    joint_step_sizes, task_step_sizes,
-                    joint_step_idx, task_step_idx,
-                selected_axis, task_mode,
-            )
+            try:
+                if use_camera:
+                    _jog_loop_camera(
+                        args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
+                        joints, posx,
+                        joint_step_sizes, task_step_sizes,
+                        joint_step_idx, task_step_idx,
+                        selected_axis, task_mode,
+                    )
+                else:
+                    _jog_loop_terminal(
+                        robot, joints, posx,
+                        joint_step_sizes, task_step_sizes,
+                        joint_step_idx, task_step_idx,
+                        selected_axis, task_mode,
+                    )
+            finally:
+                print("Returning to initial position...")
+                robot.move_to_joints(initial_joints)
     finally:
         if cap is not None:
             cap.release()
@@ -603,6 +623,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     capture_fn, cap = _make_capture(args.camera)
     try:
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+            initial_joints = robot.get_posj()
             center = _resolve_center_joints(args, robot)
             poses = generate_calibration_poses(
                 center, n_poses=args.n_poses,
@@ -613,16 +634,20 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             print(f"Collecting data ({len(poses)} poses)...")
             images: list[np.ndarray] = []
             robot_poses: list[np.ndarray] = []
-            for i, joints in enumerate(poses):
-                robot.move_to_joints(joints)
-                time.sleep(args.settle_time)
-                frame = capture_fn()
-                if detector.detect(frame) is not None:
-                    images.append(frame)
-                    robot_poses.append(posx_to_matrix(robot.get_posx()))
-                    print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
-                else:
-                    print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
+            try:
+                for i, joints in enumerate(poses):
+                    robot.move_to_joints(joints)
+                    time.sleep(args.settle_time)
+                    frame = capture_fn()
+                    if detector.detect(frame) is not None:
+                        images.append(frame)
+                        robot_poses.append(posx_to_matrix(robot.get_posx()))
+                        print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
+                    else:
+                        print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
+            finally:
+                print("Returning to initial position...")
+                robot.move_to_joints(initial_joints)
     finally:
         cap.release()
 
