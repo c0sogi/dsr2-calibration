@@ -137,6 +137,7 @@ def _make_capture(camera_id: int, retries: int = 3):
             cap.release()
             time.sleep(1.0)
         cap = cv2.VideoCapture(camera_id)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not cap.isOpened():
             print(f"Camera {camera_id}: open failed (attempt {attempt + 1}/{retries})")
             continue
@@ -161,8 +162,9 @@ def _make_capture(camera_id: int, retries: int = 3):
     _active_caps.append(cap)
 
     def capture() -> np.ndarray:
-        # Flush buffered frames to get the latest one
-        for _ in range(5):
+        # Flush buffered frames to get the latest one.
+        # USB cameras may buffer 10+ frames; drain aggressively.
+        for _ in range(15):
             cap.grab()  # type: ignore[union-attr]
         ret, frame = cap.read()  # type: ignore[union-attr]
         if not ret:
