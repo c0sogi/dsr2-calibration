@@ -162,9 +162,12 @@ def _make_capture(camera_id: int, retries: int = 3):
     _active_caps.append(cap)
 
     def capture() -> np.ndarray:
-        # Flush buffered frames to get the latest one.
-        # USB cameras may buffer 10+ frames; drain aggressively.
-        for _ in range(15):
+        # Drain stale buffered frames by grabbing continuously for a
+        # fixed duration.  This is more robust than a fixed grab count
+        # because buffer sizes and grab() blocking behaviour vary
+        # across camera models and drivers.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
             cap.grab()  # type: ignore[union-attr]
         ret, frame = cap.read()  # type: ignore[union-attr]
         if not ret:
