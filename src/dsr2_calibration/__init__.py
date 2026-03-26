@@ -5,6 +5,7 @@ from .calibration import (
     HandEyeCalibrator,
     auto_calibrate,
     generate_calibration_poses,
+    generate_poses_from_safe_zone,
     posx_to_matrix,
 )
 from .detector import BoardConfig, BoardDetector, calibrate_camera
@@ -19,5 +20,6 @@ __all__ = [
     "auto_calibrate",
     "calibrate_camera",
     "generate_calibration_poses",
+    "generate_poses_from_safe_zone",
     "posx_to_matrix",
 ]

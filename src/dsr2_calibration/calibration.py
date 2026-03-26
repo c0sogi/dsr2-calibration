@@ -228,6 +228,46 @@ def generate_calibration_poses(
     return poses
 
 
+def generate_poses_from_safe_zone(
+    vertices: list[list[float]],
+    n_poses: int = 30,
+    seed: int = 42,
+    joint_limits: list[tuple[float, float]] | None = None,
+) -> list[list[float]]:
+    """Sample *n_poses* joint configurations inside the convex hull of *vertices*.
+
+    Each vertex is a 6-DOF joint configuration obtained from a jog session.
+    Poses are generated as random convex combinations of 2–4 vertices,
+    which guarantees every sample lies within the convex hull of the
+    known-safe positions.  The vertices themselves are always included.
+    """
+    limits = joint_limits or _A0509_JOINT_LIMITS
+    rng = np.random.default_rng(seed)
+    verts = np.asarray(vertices, dtype=float)
+    n_verts = len(verts)
+
+    if n_verts < 2:
+        raise ValueError(f"Need ≥2 safe-zone vertices, got {n_verts}")
+
+    # Start with all vertices
+    poses: list[list[float]] = []
+    for v in verts:
+        if all(lo <= j <= hi for j, (lo, hi) in zip(v, limits)):
+            poses.append(v.tolist())
+
+    # Fill the rest by random convex combinations
+    attempts = 0
+    while len(poses) < n_poses and attempts < n_poses * 20:
+        attempts += 1
+        n_pick = min(rng.integers(2, 5), n_verts)
+        idx = rng.choice(n_verts, size=n_pick, replace=False)
+        weights = rng.dirichlet(np.ones(n_pick) * 0.5)  # alpha<1 → more spread
+        candidate = weights @ verts[idx]
+        if all(lo <= j <= hi for j, (lo, hi) in zip(candidate, limits)):
+            poses.append(candidate.tolist())
+    return poses
+
+
 # ── Automated pipeline ───────────────────────────────────────────────
 
 

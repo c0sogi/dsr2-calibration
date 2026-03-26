@@ -25,7 +25,11 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from .calibration import auto_calibrate, generate_calibration_poses
+from .calibration import (
+    auto_calibrate,
+    generate_calibration_poses,
+    generate_poses_from_safe_zone,
+)
 from .detector import BoardConfig, BoardDetector, calibrate_camera
 from .robot import DSR2Robot
 
@@ -147,6 +151,10 @@ def _add_pose_args(
         g.add_argument(
             "--centers-from",
             help="load center poses from a poses.json file (e.g. from jog session)",
+        )
+        g.add_argument(
+            "--safe-zone",
+            help="sample poses inside convex hull of positions in a poses.json file",
         )
     else:
         g = p.add_mutually_exclusive_group(required=required)
@@ -301,6 +309,22 @@ def _resolve_center_joints(args: argparse.Namespace, robot: DSR2Robot) -> list[f
     return robot.get_posj()
 
 
+def _load_posj_from_file(path: str) -> list[list[float]]:
+    """Load joint-angle lists from a poses.json file."""
+    p = Path(path)
+    if not p.exists():
+        sys.exit(f"File not found: {p}")
+    entries = json.loads(p.read_text())
+    joints: list[list[float]] = []
+    for entry in entries:
+        if "posj" not in entry:
+            sys.exit(f"No 'posj' field in {p}")
+        joints.append(entry["posj"])
+    if not joints:
+        sys.exit(f"No entries in {p}")
+    return joints
+
+
 def _resolve_multi_center_joints(
     args: argparse.Namespace, robot: DSR2Robot,
 ) -> list[list[float]]:
@@ -309,22 +333,18 @@ def _resolve_multi_center_joints(
     posx_list: list[str] | None = getattr(args, "posx", None)
     centers_from: str | None = getattr(args, "centers_from", None)
 
-    sources = sum(bool(s) for s in (joints_list, posx_list, centers_from))
+    safe_zone: str | None = getattr(args, "safe_zone", None)
+    sources = sum(bool(s) for s in (joints_list, posx_list, centers_from, safe_zone))
     if sources > 1:
-        sys.exit("Use only one of -j, -x, or --centers-from.")
+        sys.exit("Use only one of -j, -x, --centers-from, or --safe-zone.")
+    if safe_zone:
+        # --safe-zone is handled separately in cmd_calibrate / cmd_dry_run
+        return [robot.get_posj()]
 
     centers: list[list[float]] = []
     if centers_from:
-        path = Path(centers_from)
-        if not path.exists():
-            sys.exit(f"Centers file not found: {path}")
-        entries = json.loads(path.read_text())
-        for entry in entries:
-            if "posj" in entry:
-                centers.append(entry["posj"])
-            else:
-                sys.exit(f"No 'posj' field in {path}")
-        print(f"Loaded {len(centers)} center poses from {path}")
+        centers = _load_posj_from_file(centers_from)
+        print(f"Loaded {len(centers)} center poses from {centers_from}")
     elif joints_list:
         for j_str in joints_list:
             vals, delta = _parse_pose(j_str)
@@ -404,19 +424,27 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
     try:
         with DSR2Robot(container=args.container, vel=safe_vel, acc=safe_acc) as robot:
             initial_joints = robot.get_posj()
-            centers = _resolve_multi_center_joints(args, robot)
-            poses = generate_calibration_poses(
-                centers if len(centers) > 1 else centers[0],
-                n_poses=args.n_poses,
-                wrist_range=args.wrist_range,
-                arm_range=args.arm_range,
-            )
-
-            n_centers = len(centers)
-            if n_centers > 1:
-                print(f"Dry run: {len(poses)} poses from {n_centers} centers at {safe_vel} deg/s")
+            safe_zone = getattr(args, "safe_zone", None)
+            if safe_zone:
+                vertices = _load_posj_from_file(safe_zone)
+                poses = generate_poses_from_safe_zone(
+                    vertices,
+                    n_poses=args.n_poses,
+                )
+                print(f"Dry run: {len(poses)} poses from {len(vertices)}-vertex safe zone at {safe_vel} deg/s")
             else:
-                print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
+                centers = _resolve_multi_center_joints(args, robot)
+                poses = generate_calibration_poses(
+                    centers if len(centers) > 1 else centers[0],
+                    n_poses=args.n_poses,
+                    wrist_range=args.wrist_range,
+                    arm_range=args.arm_range,
+                )
+                n_centers = len(centers)
+                if n_centers > 1:
+                    print(f"Dry run: {len(poses)} poses from {n_centers} centers at {safe_vel} deg/s")
+                else:
+                    print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
             print("Watch the robot and camera feed. Press 'q' to abort.\n")
 
             try:
@@ -1110,20 +1138,27 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             try:
                 with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
                     initial_joints = robot.get_posj()
-                    centers = _resolve_multi_center_joints(args, robot)
-                    poses = generate_calibration_poses(
-                        centers if len(centers) > 1 else centers[0],
-                        n_poses=args.n_poses,
-                        wrist_range=args.wrist_range,
-                        arm_range=args.arm_range,
-                    )
-
-                    # Single pass: collect images + robot poses together
-                    n_centers = len(centers)
-                    if n_centers > 1:
-                        print(f"Collecting data ({len(poses)} poses from {n_centers} centers)...")
+                    safe_zone = getattr(args, "safe_zone", None)
+                    if safe_zone:
+                        vertices = _load_posj_from_file(safe_zone)
+                        poses = generate_poses_from_safe_zone(
+                            vertices,
+                            n_poses=args.n_poses,
+                        )
+                        print(f"Collecting data ({len(poses)} poses from {len(vertices)}-vertex safe zone)...")
                     else:
-                        print(f"Collecting data ({len(poses)} poses)...")
+                        centers = _resolve_multi_center_joints(args, robot)
+                        poses = generate_calibration_poses(
+                            centers if len(centers) > 1 else centers[0],
+                            n_poses=args.n_poses,
+                            wrist_range=args.wrist_range,
+                            arm_range=args.arm_range,
+                        )
+                        n_centers = len(centers)
+                        if n_centers > 1:
+                            print(f"Collecting data ({len(poses)} poses from {n_centers} centers)...")
+                        else:
+                            print(f"Collecting data ({len(poses)} poses)...")
                     images = []
                     robot_poses = []
                     poses_log: list[dict] = []
