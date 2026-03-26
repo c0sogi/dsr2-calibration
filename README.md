@@ -59,8 +59,8 @@ dsr2-calibration calibrate
 로봇이 20개 포즈를 자동 이동하며 데이터를 수집하고, 카메라 렌즈 파라미터 + 카메라-그리퍼 변환행렬을 한 번에 계산합니다.
 
 출력:
-- `calibration_result_intrinsics.npz` - 카메라 렌즈 파라미터 (K, D)
-- `calibration_result.npz` - 카메라-그리퍼 변환행렬 (T_cam2gripper)
+- `calibration_result_intrinsics.json` - 카메라 렌즈 파라미터 (K, D)
+- `calibration_result.json` - 카메라-그리퍼 변환행렬 (T_cam2gripper)
 
 ## center pose 지정
 
@@ -96,7 +96,7 @@ dsr2-calibration calibrate-transform -j 0,0,90,0,90,0
 ```python
 from dsr2_calibration import CalibrationResult
 
-result = CalibrationResult.load("calibration_result.npz")
+result = CalibrationResult.load("calibration_result.json")
 T = result.T_cam2gripper  # 4x4 카메라->그리퍼 변환행렬 (미터 단위)
 ```
 
@@ -122,7 +122,7 @@ dsr2-calibration calibrate --square-length 0.038 --marker-length 0.028
 | `-j` / `--joints` | (현재 위치) | center pose 관절각 |
 | `-x` / `--posx` | (현재 위치) | center pose Cartesian (ZYZ Euler) |
 | `-n` / `--n-poses` | `20` | 캘리브레이션 포즈 수 |
-| `-o` / `--output` | `calibration_result.npz` | 출력 파일 경로 |
+| `-o` / `--output` | `calibration_result.json` | 출력 파일 경로 |
 | `--container` | `ros-control-real` | Docker 컨테이너 이름 |
 | `--camera` | `0` | OpenCV 카메라 ID |
 | `--vel` | `30` | 관절 속도 (deg/s) |

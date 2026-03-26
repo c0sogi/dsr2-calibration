@@ -10,5 +10,6 @@ wheels/
 .venv
 
 # Calibration outputs
+*.json
 *.npz
 charuco_board.png

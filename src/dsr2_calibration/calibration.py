@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,15 +54,32 @@ class CalibrationResult:
     rms: float | None = None
 
     def save(self, path: str | Path) -> None:
-        np.savez(
-            Path(path),
-            T_cam2gripper=self.T_cam2gripper,
-            n_samples=self.n_samples,
-            rms=self.rms if self.rms is not None else np.nan,
-        )
+        path = Path(path)
+        if path.suffix == ".json":
+            data = {
+                "T_cam2gripper": self.T_cam2gripper.tolist(),
+                "n_samples": self.n_samples,
+                "rms": self.rms,
+            }
+            path.write_text(json.dumps(data, indent=2))
+        else:
+            np.savez(
+                path,
+                T_cam2gripper=self.T_cam2gripper,
+                n_samples=self.n_samples,
+                rms=self.rms if self.rms is not None else np.nan,
+            )
 
     @classmethod
     def load(cls, path: str | Path) -> CalibrationResult:
+        path = Path(path)
+        if path.suffix == ".json":
+            data = json.loads(path.read_text())
+            return cls(
+                T_cam2gripper=np.array(data["T_cam2gripper"]),
+                n_samples=int(data["n_samples"]),
+                rms=data.get("rms"),
+            )
         d = np.load(path)
         rms = float(d["rms"])
         return cls(

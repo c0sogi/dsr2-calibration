@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 import signal
 import sys
 import threading
@@ -58,7 +59,7 @@ _DELTA_PREFIX = "d:"
 
 
 def _timestamped_name(base: str) -> str:
-    """Generate a filename with a timestamp, e.g. 'calibration_result_20260325_143012.npz'."""
+    """Generate a filename with a timestamp, e.g. 'calibration_result_20260325_143012.json'."""
     stem, _, ext = base.rpartition(".")
     if not stem:
         stem, ext = ext, ""
@@ -67,6 +68,22 @@ def _timestamped_name(base: str) -> str:
 
 
 # -- helpers ---------------------------------------------------------------
+
+
+def _save_intrinsics(path: str, K: np.ndarray, D: np.ndarray) -> None:
+    if path.endswith(".json"):
+        data = {"K": K.tolist(), "D": D.tolist()}
+        Path(path).write_text(json.dumps(data, indent=2))
+    else:
+        np.savez(path, K=K, D=D)
+
+
+def _load_intrinsics(path: str) -> tuple[np.ndarray, np.ndarray]:
+    if path.endswith(".json"):
+        data = json.loads(Path(path).read_text())
+        return np.array(data["K"]), np.array(data["D"])
+    d = np.load(path)
+    return d["K"], d["D"]
 
 
 def _board_from_args(args: argparse.Namespace) -> BoardConfig:
@@ -441,17 +458,16 @@ def cmd_calibrate_camera(args: argparse.Namespace) -> None:
             _release_capture(cap)
 
     K, D, rms = calibrate_camera(detector, images, min_corners=args.min_corners, max_rms=args.max_rms)
-    np.savez(args.output, K=K, D=D)
+    _save_intrinsics(args.output, K, D)
     print(f"RMS reprojection error: {rms:.4f}")
     print(f"Saved {args.output}")
 
 
 def cmd_calibrate_transform(args: argparse.Namespace) -> None:
     try:
-        intrinsics = np.load(args.intrinsics)
+        K, D = _load_intrinsics(args.intrinsics)
     except FileNotFoundError:
         sys.exit(f"{args.intrinsics} not found. Run calibrate-camera first.")
-    K, D = intrinsics["K"], intrinsics["D"]
 
     board = _board_from_args(args)
     detector = BoardDetector(board)
@@ -1006,8 +1022,9 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     # Step 1: camera intrinsics from collected images
     print(f"\n[1/2] Camera intrinsics ({len(images)} images)...")
     K, D, rms = calibrate_camera(detector, images, min_corners=args.min_corners, max_rms=args.max_rms)
-    intrinsics_path = args.output.replace(".npz", "_intrinsics.npz")
-    np.savez(intrinsics_path, K=K, D=D)
+    ext = ".json" if args.output.endswith(".json") else ".npz"
+    intrinsics_path = args.output.replace(ext, f"_intrinsics{ext}")
+    _save_intrinsics(intrinsics_path, K, D)
     print(f"  RMS reprojection error: {rms:.4f}")
     print(f"  Saved {intrinsics_path}")
 
@@ -1068,7 +1085,7 @@ def main() -> None:
     _add_robot_args(p)
     p.add_argument("-n", "--n-images", type=int, default=20)
     p.add_argument("--camera", type=int, default=0)
-    p.add_argument("-o", "--output", default=_timestamped_name("camera_intrinsics.npz"))
+    p.add_argument("-o", "--output", default=_timestamped_name("camera_intrinsics.json"))
     p.set_defaults(func=cmd_calibrate_camera)
 
     # calibrate-transform
@@ -1078,11 +1095,11 @@ def main() -> None:
     _add_board_args(p)
     _add_pose_args(p)
     _add_robot_args(p)
-    p.add_argument("-i", "--intrinsics", default="camera_intrinsics.npz")
+    p.add_argument("-i", "--intrinsics", default="camera_intrinsics.json")
     p.add_argument("-n", "--n-poses", type=int, default=15)
     p.add_argument("--camera", type=int, default=0)
     p.add_argument(
-        "-o", "--output", default=_timestamped_name("calibration_result.npz")
+        "-o", "--output", default=_timestamped_name("calibration_result.json")
     )
     p.set_defaults(func=cmd_calibrate_transform)
 
@@ -1107,7 +1124,7 @@ def main() -> None:
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("-n", "--n-poses", type=int, default=20)
     p.add_argument(
-        "-o", "--output", default=_timestamped_name("calibration_result.npz")
+        "-o", "--output", default=_timestamped_name("calibration_result.json")
     )
     p.set_defaults(func=cmd_calibrate)
 
