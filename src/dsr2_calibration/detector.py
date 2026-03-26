@@ -75,6 +75,8 @@ def calibrate_camera(
     detector: BoardDetector,
     images: list[np.ndarray],
     image_size: tuple[int, int] | None = None,
+    min_corners: int = 12,
+    max_rms: float = 10.0,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Calibrate camera intrinsics from ChArUco images.
 
@@ -89,13 +91,13 @@ def calibrate_camera(
             continue
         corners, ids = result
         obj_pts, img_pts = detector.board.matchImagePoints(corners, ids)  # type: ignore[arg-type]
-        if len(obj_pts) >= 6:
+        if len(obj_pts) >= min_corners:
             all_obj.append(obj_pts)
             all_img.append(img_pts)
 
     if len(all_obj) < 3:
         raise ValueError(
-            f"Need ≥3 valid detections (≥6 corners each), got {len(all_obj)}"
+            f"Need ≥3 valid detections (≥{min_corners} corners each), got {len(all_obj)}"
         )
 
     if image_size is None:
@@ -126,5 +128,11 @@ def calibrate_camera(
             K0,
             D0,
             flags=cv2.CALIB_USE_INTRINSIC_GUESS,
+        )
+    if rms > max_rms:
+        raise ValueError(
+            f"Calibration diverged (RMS={rms:.1f}px, expected <1.0). "
+            "Likely causes: board too small in frame, or corners clustered "
+            "in one region. Reposition the board closer to camera center."
         )
     return K.astype(np.float64, copy=False), D.astype(np.float64, copy=False), rms

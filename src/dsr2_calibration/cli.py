@@ -96,6 +96,18 @@ def _add_board_args(p: argparse.ArgumentParser) -> None:
         default=0.030,
         help="ArUco marker side length in meters, must be smaller than square-length (default: 0.030 = 30mm)",
     )
+    g.add_argument(
+        "--min-corners",
+        type=int,
+        default=12,
+        help="minimum detected corners per image to use for calibration (default: 12)",
+    )
+    g.add_argument(
+        "--max-rms",
+        type=float,
+        default=10.0,
+        help="maximum acceptable RMS reprojection error in pixels (default: 10.0)",
+    )
 
 
 def _add_pose_args(p: argparse.ArgumentParser, required: bool = False) -> None:
@@ -428,7 +440,7 @@ def cmd_calibrate_camera(args: argparse.Namespace) -> None:
         finally:
             _release_capture(cap)
 
-    K, D, rms = calibrate_camera(detector, images)
+    K, D, rms = calibrate_camera(detector, images, min_corners=args.min_corners, max_rms=args.max_rms)
     np.savez(args.output, K=K, D=D)
     print(f"RMS reprojection error: {rms:.4f}")
     print(f"Saved {args.output}")
@@ -993,7 +1005,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     # Step 1: camera intrinsics from collected images
     print(f"\n[1/2] Camera intrinsics ({len(images)} images)...")
-    K, D, rms = calibrate_camera(detector, images)
+    K, D, rms = calibrate_camera(detector, images, min_corners=args.min_corners, max_rms=args.max_rms)
     intrinsics_path = args.output.replace(".npz", "_intrinsics.npz")
     np.savez(intrinsics_path, K=K, D=D)
     print(f"  RMS reprojection error: {rms:.4f}")
