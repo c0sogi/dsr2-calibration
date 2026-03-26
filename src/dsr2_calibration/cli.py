@@ -144,6 +144,10 @@ def _add_pose_args(
             action="append",
             help="center Cartesian [x,y,z,w,p,r] in mm/deg (repeatable)",
         )
+        g.add_argument(
+            "--centers-from",
+            help="load center poses from a poses.json file (e.g. from jog session)",
+        )
     else:
         g = p.add_mutually_exclusive_group(required=required)
         g.add_argument(
@@ -300,15 +304,28 @@ def _resolve_center_joints(args: argparse.Namespace, robot: DSR2Robot) -> list[f
 def _resolve_multi_center_joints(
     args: argparse.Namespace, robot: DSR2Robot,
 ) -> list[list[float]]:
-    """Resolve one or more center poses from repeated -j / -x flags."""
+    """Resolve one or more center poses from repeated -j / -x flags or --centers-from."""
     joints_list: list[str] | None = getattr(args, "joints", None)
     posx_list: list[str] | None = getattr(args, "posx", None)
+    centers_from: str | None = getattr(args, "centers_from", None)
 
-    if joints_list and posx_list:
-        sys.exit("Cannot mix -j and -x; use one or the other.")
+    sources = sum(bool(s) for s in (joints_list, posx_list, centers_from))
+    if sources > 1:
+        sys.exit("Use only one of -j, -x, or --centers-from.")
 
     centers: list[list[float]] = []
-    if joints_list:
+    if centers_from:
+        path = Path(centers_from)
+        if not path.exists():
+            sys.exit(f"Centers file not found: {path}")
+        entries = json.loads(path.read_text())
+        for entry in entries:
+            if "posj" in entry:
+                centers.append(entry["posj"])
+            else:
+                sys.exit(f"No 'posj' field in {path}")
+        print(f"Loaded {len(centers)} center poses from {path}")
+    elif joints_list:
         for j_str in joints_list:
             vals, delta = _parse_pose(j_str)
             if delta:
