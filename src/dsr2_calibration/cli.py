@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import argparse
 import atexit
-from datetime import datetime
 import signal
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -81,41 +82,68 @@ def _board_from_args(args: argparse.Namespace) -> BoardConfig:
 
 def _add_board_args(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("board")
-    g.add_argument("--cols", type=int, default=5,
-                   help="board columns (default: 5)")
-    g.add_argument("--rows", type=int, default=7,
-                   help="board rows (default: 7)")
-    g.add_argument("--square-length", type=float, default=0.040,
-                   help="black/white checkerboard square side length "
-                        "in meters (default: 0.040 = 40mm)")
-    g.add_argument("--marker-length", type=float, default=0.030,
-                   help="ArUco marker side length in meters, must be smaller "
-                        "than square-length (default: 0.030 = 30mm)")
+    g.add_argument("--cols", type=int, default=5, help="board columns (default: 5)")
+    g.add_argument("--rows", type=int, default=7, help="board rows (default: 7)")
+    g.add_argument(
+        "--square-length",
+        type=float,
+        default=0.040,
+        help="black/white checkerboard square side length in meters (default: 0.040 = 40mm)",
+    )
+    g.add_argument(
+        "--marker-length",
+        type=float,
+        default=0.030,
+        help="ArUco marker side length in meters, must be smaller than square-length (default: 0.030 = 30mm)",
+    )
 
 
 def _add_pose_args(p: argparse.ArgumentParser, required: bool = False) -> None:
     g = p.add_mutually_exclusive_group(required=required)
-    g.add_argument("-j", "--joints",
-                   help="joint angles in degrees, or d:delta "
-                        "(e.g. 0,0,90,0,90,0 or d:5,0,-5,0,0,0)")
-    g.add_argument("-x", "--posx",
-                   help="Cartesian [x,y,z,w,p,r] in mm/deg, or d:delta "
-                        "(e.g. -300,0,500,0,180,0 or d:100,0,0,0,0,0)")
+    g.add_argument(
+        "-j",
+        "--joints",
+        help="joint angles in degrees, or d:delta (e.g. 0,0,90,0,90,0 or d:5,0,-5,0,0,0)",
+    )
+    g.add_argument(
+        "-x",
+        "--posx",
+        help="Cartesian [x,y,z,w,p,r] in mm/deg, or d:delta (e.g. -300,0,500,0,180,0 or d:100,0,0,0,0,0)",
+    )
 
 
 def _add_robot_args(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("robot")
-    g.add_argument("--container", default="ros-control-real", help="Docker container name")
-    g.add_argument("--vel", type=float, default=30.0,
-                   help="joint velocity in deg/s (default: 30)")
-    g.add_argument("--acc", type=float, default=30.0,
-                   help="joint acceleration in deg/s^2 (default: 30)")
-    g.add_argument("--settle-time", type=float, default=1.0,
-                   help="wait time after each move in seconds (default: 1.0)")
-    g.add_argument("--wrist-range", type=float, default=20.0,
-                   help="wrist joint perturbation in degrees (default: 20)")
-    g.add_argument("--arm-range", type=float, default=8.0,
-                   help="arm joint perturbation in degrees (default: 8)")
+    g.add_argument(
+        "--container", default="ros-control-real", help="Docker container name"
+    )
+    g.add_argument(
+        "--vel", type=float, default=30.0, help="joint velocity in deg/s (default: 30)"
+    )
+    g.add_argument(
+        "--acc",
+        type=float,
+        default=30.0,
+        help="joint acceleration in deg/s^2 (default: 30)",
+    )
+    g.add_argument(
+        "--settle-time",
+        type=float,
+        default=1.0,
+        help="wait time after each move in seconds (default: 1.0)",
+    )
+    g.add_argument(
+        "--wrist-range",
+        type=float,
+        default=20.0,
+        help="wrist joint perturbation in degrees (default: 20)",
+    )
+    g.add_argument(
+        "--arm-range",
+        type=float,
+        default=8.0,
+        help="arm joint perturbation in degrees (default: 8)",
+    )
 
 
 def _release_capture(cap: cv2.VideoCapture) -> None:
@@ -145,19 +173,16 @@ def _make_capture(camera_id: int, retries: int = 3):
         ret, _ = cap.read()
         if ret:
             break
-        print(f"Camera {camera_id}: open ok but read failed "
-              f"(attempt {attempt + 1}/{retries})")
+        print(
+            f"Camera {camera_id}: open ok but read failed (attempt {attempt + 1}/{retries})"
+        )
     else:
         if cap is not None:
             cap.release()
         hint = "Try unplugging/replugging the camera."
         if sys.platform == "linux":
-            hint += (" Or run 'sudo usbreset /dev/bus/usb/...' "
-                     "to reset the USB device.")
-        sys.exit(
-            f"Cannot open camera {camera_id} after {retries} attempts. "
-            + hint
-        )
+            hint += " Or run 'sudo usbreset /dev/bus/usb/...' to reset the USB device."
+        sys.exit(f"Cannot open camera {camera_id} after {retries} attempts. " + hint)
 
     _active_caps.append(cap)
 
@@ -187,7 +212,7 @@ def _parse_floats(s: str, expected: int = 6) -> list[float]:
 def _parse_pose(s: str) -> tuple[list[float], bool]:
     """Parse '0,0,90,0,90,0' or 'd:10,0,-5,0,0,0'. Returns (values, is_delta)."""
     if s.startswith(_DELTA_PREFIX):
-        return _parse_floats(s[len(_DELTA_PREFIX):]), True
+        return _parse_floats(s[len(_DELTA_PREFIX) :]), True
     return _parse_floats(s), False
 
 
@@ -227,13 +252,23 @@ def cmd_preview(args: argparse.Namespace) -> None:
                 corners, ids = result
                 cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
                 cv2.putText(
-                    frame, f"Detected: {len(ids)} corners",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2,
+                    frame,
+                    f"Detected: {len(ids)} corners",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2,
                 )
             else:
                 cv2.putText(
-                    frame, "Board not detected",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
+                    frame,
+                    "Board not detected",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),
+                    2,
                 )
 
             cv2.imshow("dsr2-calibration preview", frame)
@@ -258,8 +293,10 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
             initial_joints = robot.get_posj()
             center = _resolve_center_joints(args, robot)
             poses = generate_calibration_poses(
-                center, n_poses=args.n_poses,
-                wrist_range=args.wrist_range, arm_range=args.arm_range,
+                center,
+                n_poses=args.n_poses,
+                wrist_range=args.wrist_range,
+                arm_range=args.arm_range,
             )
 
             print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
@@ -278,20 +315,27 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
                     if result is not None:
                         detected += 1
                         corners, ids = result
-                        cv2.aruco.drawDetectedCornersCharuco(frame, corners, ids, (0, 255, 0))
+                        cv2.aruco.drawDetectedCornersCharuco(
+                            frame, corners, ids, (0, 255, 0)
+                        )
                         status = f"[{i + 1}/{len(poses)}] OK ({len(ids)} corners)"
                         color = (0, 255, 0)
                     else:
                         status = f"[{i + 1}/{len(poses)}] Board not visible"
                         color = (0, 0, 255)
 
-                    cv2.putText(frame, status, (10, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    cv2.putText(
+                        frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2
+                    )
                     cv2.putText(
                         frame,
                         f"posx: [{posx[0]:.0f}, {posx[1]:.0f}, {posx[2]:.0f}, "
                         f"{posx[3]:.0f}, {posx[4]:.0f}, {posx[5]:.0f}]",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                        (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 255, 255),
+                        1,
                     )
                     cv2.imshow("dsr2-calibration dry-run", frame)
                     print(f"  {status}  posx=[{', '.join(f'{v:.1f}' for v in posx)}]")
@@ -355,12 +399,16 @@ def cmd_calibrate_camera(args: argparse.Namespace) -> None:
         capture_fn, cap = _make_capture(args.camera)
         images = []
         try:
-            with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+            with DSR2Robot(
+                container=args.container, vel=args.vel, acc=args.acc
+            ) as robot:
                 initial_joints = robot.get_posj()
                 center = _resolve_center_joints(args, robot)
                 poses = generate_calibration_poses(
-                    center, n_poses=args.n_images,
-                    wrist_range=args.wrist_range, arm_range=args.arm_range,
+                    center,
+                    n_poses=args.n_images,
+                    wrist_range=args.wrist_range,
+                    arm_range=args.arm_range,
                 )
                 try:
                     for i, joints in enumerate(poses):
@@ -369,7 +417,9 @@ def cmd_calibrate_camera(args: argparse.Namespace) -> None:
                         frame = capture_fn()
                         if detector.detect(frame) is not None:
                             images.append(frame)
-                            print(f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)")
+                            print(
+                                f"  [{i + 1}/{len(poses)}] detected ({len(images)} total)"
+                            )
                         else:
                             print(f"  [{i + 1}/{len(poses)}] board not found, skipped")
                 finally:
@@ -399,8 +449,10 @@ def cmd_calibrate_transform(args: argparse.Namespace) -> None:
             initial_joints = robot.get_posj()
             center = _resolve_center_joints(args, robot)
             poses = generate_calibration_poses(
-                center, n_poses=args.n_poses,
-                wrist_range=args.wrist_range, arm_range=args.arm_range,
+                center,
+                n_poses=args.n_poses,
+                wrist_range=args.wrist_range,
+                arm_range=args.arm_range,
             )
             try:
                 result = auto_calibrate(
@@ -433,14 +485,18 @@ def _clear_screen() -> None:
     """Clear terminal screen (cross-platform)."""
     if sys.platform == "win32":
         import os
+
         os.system("cls")
     else:
         print("\033[2J\033[H", end="")
 
 
 def _jog_print_state(
-    task_mode: bool, selected_axis: int, step: float,
-    joints: list[float], posx: list[float],
+    task_mode: bool,
+    selected_axis: int,
+    step: float,
+    joints: list[float],
+    posx: list[float],
 ) -> None:
     """Print current jog state to terminal."""
     mode_text = "TASK" if task_mode else "JOINT"
@@ -458,49 +514,65 @@ def _jog_print_state(
     if task_mode:
         print(f"  J: [{', '.join(f'{v:.1f}' for v in joints)}]")
     else:
-        print(f"  X:{posx[0]:.1f} Y:{posx[1]:.1f} Z:{posx[2]:.1f}"
-              f"  W:{posx[3]:.1f} P:{posx[4]:.1f} R:{posx[5]:.1f}")
-    print("\n[Tab] joint/task  [1-6] axis  [a/d] jog  [w/s] step"
-          "  [Enter] accept  [Esc] cancel")
+        print(
+            f"  X:{posx[0]:.1f} Y:{posx[1]:.1f} Z:{posx[2]:.1f}  W:{posx[3]:.1f} P:{posx[4]:.1f} R:{posx[5]:.1f}"
+        )
+    print(
+        "\n[Tab] joint/task  [1-6] axis  [a/d] jog  [w/s] step  [Enter] accept  [Esc] cancel"
+    )
 
 
 def cmd_jog(args: argparse.Namespace) -> None:
     """Interactive jog mode: move robot with keyboard while watching camera."""
     use_camera = args.camera is not None
 
-    cap = None
     if use_camera:
         board = _board_from_args(args)
         detector = BoardDetector(board)
         capture_fn, cap = _make_capture(args.camera)
+    else:
+        detector = None
+        capture_fn = None
+        cap = None
 
     joint_step_sizes = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
     task_step_sizes = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
-    joint_step_idx = 2   # 2.0 deg
-    task_step_idx = 3    # 5.0 mm/deg
+    joint_step_idx = 2  # 2.0 deg
+    task_step_idx = 3  # 5.0 mm/deg
 
-    selected_axis = 0    # 0-based index
-    task_mode = False     # False=joint, True=task space
+    selected_axis = 0  # 0-based index
+    task_mode = False  # False=joint, True=task space
 
     try:
         with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
             joints = _resolve_center_joints(args, robot)
             posx = robot.get_posx()
 
-            if use_camera:
+            if detector is not None and capture_fn is not None:
                 _jog_loop_camera(
-                    args, robot, detector, capture_fn, cap,  # type: ignore[possibly-undefined]
-                    joints, posx,
-                    joint_step_sizes, task_step_sizes,
-                    joint_step_idx, task_step_idx,
-                    selected_axis, task_mode,
+                    robot=robot,
+                    detector=detector,
+                    capture_fn=capture_fn,
+                    joints=joints,
+                    posx=posx,
+                    joint_step_sizes=joint_step_sizes,
+                    task_step_sizes=task_step_sizes,
+                    joint_step_idx=joint_step_idx,
+                    task_step_idx=task_step_idx,
+                    selected_axis=selected_axis,
+                    task_mode=task_mode,
                 )
             else:
                 _jog_loop_terminal(
-                    robot, joints, posx,
-                    joint_step_sizes, task_step_sizes,
-                    joint_step_idx, task_step_idx,
-                    selected_axis, task_mode,
+                    robot=robot,
+                    joints=joints,
+                    posx=posx,
+                    joint_step_sizes=joint_step_sizes,
+                    task_step_sizes=task_step_sizes,
+                    joint_step_idx=joint_step_idx,
+                    task_step_idx=task_step_idx,
+                    selected_axis=selected_axis,
+                    task_mode=task_mode,
                 )
     finally:
         if cap is not None:
@@ -509,11 +581,9 @@ def cmd_jog(args: argparse.Namespace) -> None:
 
 
 def _jog_loop_camera(
-    args: argparse.Namespace,
     robot: DSR2Robot,
     detector: BoardDetector,
-    capture_fn,
-    cap,
+    capture_fn: Callable[[], np.ndarray],
     joints: list[float],
     posx: list[float],
     joint_step_sizes: list[float],
@@ -564,32 +634,53 @@ def _jog_loop_camera(
             step = joint_step_sizes[joint_step_idx]
             mode_text, step_unit = "JOINT", "deg"
 
-        cv2.putText(frame, det_text,
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, det_color, 2)
+        cv2.putText(
+            frame, det_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, det_color, 2
+        )
 
         status_text = f"[{mode_text}]  Step: {step:.1f} {step_unit}"
         if moving:
             status_text += "  ** Moving... **"
-        cv2.putText(frame, status_text,
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(
+            frame,
+            status_text,
+            (10, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            1,
+        )
 
         for i in range(6):
             color = (0, 255, 255) if i == selected_axis else (200, 200, 200)
             marker = ">" if i == selected_axis else " "
             txt = f"{marker} {labels[i]}: {values[i]:+8.2f} {units[i]}"
-            cv2.putText(frame, txt,
-                        (10, 95 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
+            cv2.putText(
+                frame, txt, (10, 95 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1
+            )
 
         if task_mode:
             sec = f"J:[{', '.join(f'{v:.1f}' for v in joints)}]"
         else:
-            sec = (f"X:{posx[0]:.1f} Y:{posx[1]:.1f} Z:{posx[2]:.1f}  "
-                   f"W:{posx[3]:.1f} P:{posx[4]:.1f} R:{posx[5]:.1f}")
-        cv2.putText(frame, sec,
-                    (10, h_img - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
-        cv2.putText(frame,
-                    "[Tab] joint/task  [1-6] axis  [a/d] jog  [w/s] step  [Enter] ok",
-                    (10, h_img - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+            sec = f"X:{posx[0]:.1f} Y:{posx[1]:.1f} Z:{posx[2]:.1f}  W:{posx[3]:.1f} P:{posx[4]:.1f} R:{posx[5]:.1f}"
+        cv2.putText(
+            frame,
+            sec,
+            (10, h_img - 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (180, 180, 180),
+            1,
+        )
+        cv2.putText(
+            frame,
+            "[Tab] joint/task  [1-6] axis  [a/d] jog  [w/s] step  [Enter] ok",
+            (10, h_img - 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            (180, 180, 180),
+            1,
+        )
 
         cv2.imshow("dsr2-calibration jog", frame)
         key = cv2.waitKey(50) & 0xFF
@@ -616,16 +707,14 @@ def _jog_loop_camera(
                 posx[selected_axis] += sign * step
                 threading.Thread(
                     target=_do_move,
-                    args=(robot.move_to_posx, list(posx),
-                          robot.get_posj, joints),
+                    args=(robot.move_to_posx, list(posx), robot.get_posj, joints),
                     daemon=True,
                 ).start()
             else:
                 joints[selected_axis] += sign * step
                 threading.Thread(
                     target=_do_move,
-                    args=(robot.move_to_joints, list(joints),
-                          robot.get_posx, posx),
+                    args=(robot.move_to_joints, list(joints), robot.get_posx, posx),
                     daemon=True,
                 ).start()
         elif key == ord("w"):
@@ -642,21 +731,10 @@ def _jog_loop_camera(
     _jog_print_result(joints, posx)
 
 
-def _get_key_unix() -> str:
-    """Read a single keypress on Unix (handles escape sequences)."""
-    ch = sys.stdin.read(1)
-    if ch == "\x1b":
-        seq = sys.stdin.read(1)
-        if seq == "[":
-            return "\x1b[" + sys.stdin.read(1)
-        return "\x1b"
-    return ch
-
-
 if sys.platform == "win32":
     import msvcrt
 
-    def _get_key_win() -> str:
+    def _get_key() -> str:
         """Read a single keypress on Windows via msvcrt."""
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):
@@ -667,7 +745,7 @@ if sys.platform == "win32":
             return "\x1b"
         return ch
 
-    def _jog_loop_terminal_win(
+    def _jog_loop_terminal(
         robot: DSR2Robot,
         joints: list[float],
         posx: list[float],
@@ -680,43 +758,71 @@ if sys.platform == "win32":
     ) -> None:
         # msvcrt.getwch() already reads single keys without echo — no raw mode needed.
         accepted = _jog_terminal_mainloop(
-            robot, joints, posx,
-            joint_step_sizes, task_step_sizes,
-            joint_step_idx, task_step_idx,
-            selected_axis, task_mode,
-            _get_key_win,
+            robot,
+            joints,
+            posx,
+            joint_step_sizes,
+            task_step_sizes,
+            joint_step_idx,
+            task_step_idx,
+            selected_axis,
+            task_mode,
+            _get_key,
         )
         if accepted:
             _jog_print_result(joints, posx)
         else:
             print("\nCancelled.")
 
+else:
+    import termios
+    import tty
 
-def _jog_loop_terminal(
-    robot: DSR2Robot,
-    joints: list[float],
-    posx: list[float],
-    joint_step_sizes: list[float],
-    task_step_sizes: list[float],
-    joint_step_idx: int,
-    task_step_idx: int,
-    selected_axis: int,
-    task_mode: bool,
-) -> None:
-    if sys.platform == "win32":
-        _jog_loop_terminal_win(
-            robot, joints, posx,
-            joint_step_sizes, task_step_sizes,
-            joint_step_idx, task_step_idx,
-            selected_axis, task_mode,
-        )
-    else:
-        _jog_loop_terminal_unix(
-            robot, joints, posx,
-            joint_step_sizes, task_step_sizes,
-            joint_step_idx, task_step_idx,
-            selected_axis, task_mode,
-        )
+    def _get_key() -> str:
+        """Read a single keypress on Unix (handles escape sequences)."""
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            seq = sys.stdin.read(1)
+            if seq == "[":
+                return "\x1b[" + sys.stdin.read(1)
+            return "\x1b"
+        return ch
+
+    def _jog_loop_terminal(
+        robot: DSR2Robot,
+        joints: list[float],
+        posx: list[float],
+        joint_step_sizes: list[float],
+        task_step_sizes: list[float],
+        joint_step_idx: int,
+        task_step_idx: int,
+        selected_axis: int,
+        task_mode: bool,
+    ) -> None:
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            accepted = _jog_terminal_mainloop(
+                robot,
+                joints,
+                posx,
+                joint_step_sizes,
+                task_step_sizes,
+                joint_step_idx,
+                task_step_idx,
+                selected_axis,
+                task_mode,
+                _get_key,
+            )
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+        if accepted:
+            _jog_print_result(joints, posx)
+        else:
+            print("\nCancelled.")
 
 
 def _jog_terminal_mainloop(
@@ -736,8 +842,11 @@ def _jog_terminal_mainloop(
     _jog_print_state(task_mode, selected_axis, step, joints, posx)
 
     while True:
-        step = (task_step_sizes[task_step_idx] if task_mode
-                else joint_step_sizes[joint_step_idx])
+        step = (
+            task_step_sizes[task_step_idx]
+            if task_mode
+            else joint_step_sizes[joint_step_idx]
+        )
 
         key = get_key_fn()
 
@@ -776,47 +885,13 @@ def _jog_terminal_mainloop(
         _jog_print_state(task_mode, selected_axis, step, joints, posx)
 
 
-def _jog_loop_terminal_unix(
-    robot: DSR2Robot,
-    joints: list[float],
-    posx: list[float],
-    joint_step_sizes: list[float],
-    task_step_sizes: list[float],
-    joint_step_idx: int,
-    task_step_idx: int,
-    selected_axis: int,
-    task_mode: bool,
-) -> None:
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        accepted = _jog_terminal_mainloop(
-            robot, joints, posx,
-            joint_step_sizes, task_step_sizes,
-            joint_step_idx, task_step_idx,
-            selected_axis, task_mode,
-            _get_key_unix,
-        )
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-    if accepted:
-        _jog_print_result(joints, posx)
-    else:
-        print("\nCancelled.")
-
-
 def _jog_print_result(joints: list[float], posx: list[float]) -> None:
     joints_str = ",".join(f"{v:.2f}" for v in joints)
     posx_str = ",".join(f"{v:.1f}" for v in posx)
-    print(f"\nAccepted pose:")
+    print("\nAccepted pose:")
     print(f"  joints: {joints_str}")
     print(f"  posx:   {posx_str}")
-    print(f"\nUse with calibrate:")
+    print("\nUse with calibrate:")
     print(f"  dsr2-calibration calibrate -j {joints_str}")
 
 
@@ -839,8 +914,10 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             initial_joints = robot.get_posj()
             center = _resolve_center_joints(args, robot)
             poses = generate_calibration_poses(
-                center, n_poses=args.n_poses,
-                wrist_range=args.wrist_range, arm_range=args.arm_range,
+                center,
+                n_poses=args.n_poses,
+                wrist_range=args.wrist_range,
+                arm_range=args.arm_range,
             )
 
             # Single pass: collect images + robot poses together
@@ -860,17 +937,35 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
                         corners, ids = result
                         images.append(frame)
                         robot_poses.append(posx_to_matrix(robot.get_posx()))
-                        status = f"[{i + 1}/{len(poses)}] detected ({len(images)} total)"
+                        status = (
+                            f"[{i + 1}/{len(poses)}] detected ({len(images)} total)"
+                        )
                         if show_gui:
-                            cv2.aruco.drawDetectedCornersCharuco(display, corners, ids, (0, 255, 0))
-                            cv2.putText(display, status, (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            cv2.aruco.drawDetectedCornersCharuco(
+                                display, corners, ids, (0, 255, 0)
+                            )
+                            cv2.putText(
+                                display,
+                                status,
+                                (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7,
+                                (0, 255, 0),
+                                2,
+                            )
                         print(f"  {status}")
                     else:
                         status = f"[{i + 1}/{len(poses)}] board not found, skipped"
                         if show_gui:
-                            cv2.putText(display, status, (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            cv2.putText(
+                                display,
+                                status,
+                                (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7,
+                                (0, 0, 255),
+                                2,
+                            )
                         print(f"  {status}")
                     if show_gui:
                         cv2.imshow("dsr2-calibration", display)
@@ -933,8 +1028,10 @@ def main() -> None:
     p.set_defaults(func=cmd_preview)
 
     # dry-run
-    p = sub.add_parser("dry-run",
-                        help="Test all poses at low speed with camera feed before calibrating")
+    p = sub.add_parser(
+        "dry-run",
+        help="Test all poses at low speed with camera feed before calibrating",
+    )
     _add_board_args(p)
     _add_pose_args(p)
     _add_robot_args(p)
@@ -945,7 +1042,9 @@ def main() -> None:
     # generate-charuco
     p = sub.add_parser("generate-charuco", help="Save a printable ChArUco board image")
     _add_board_args(p)
-    p.add_argument("--dpi", type=int, default=150, help="image resolution (default: 150)")
+    p.add_argument(
+        "--dpi", type=int, default=150, help="image resolution (default: 150)"
+    )
     p.add_argument("-o", "--output", default="charuco_board.png")
     p.set_defaults(func=cmd_generate_charuco)
 
@@ -961,14 +1060,18 @@ def main() -> None:
     p.set_defaults(func=cmd_calibrate_camera)
 
     # calibrate-transform
-    p = sub.add_parser("calibrate-transform", help="Compute camera-to-gripper transform")
+    p = sub.add_parser(
+        "calibrate-transform", help="Compute camera-to-gripper transform"
+    )
     _add_board_args(p)
     _add_pose_args(p)
     _add_robot_args(p)
     p.add_argument("-i", "--intrinsics", default="camera_intrinsics.npz")
     p.add_argument("-n", "--n-poses", type=int, default=15)
     p.add_argument("--camera", type=int, default=0)
-    p.add_argument("-o", "--output", default=_timestamped_name("calibration_result.npz"))
+    p.add_argument(
+        "-o", "--output", default=_timestamped_name("calibration_result.npz")
+    )
     p.set_defaults(func=cmd_calibrate_transform)
 
     # jog
@@ -976,8 +1079,12 @@ def main() -> None:
     _add_board_args(p)
     _add_pose_args(p)
     _add_robot_args(p)
-    p.add_argument("--camera", type=int, default=None,
-                   help="camera ID (omit for terminal-only jog without camera)")
+    p.add_argument(
+        "--camera",
+        type=int,
+        default=None,
+        help="camera ID (omit for terminal-only jog without camera)",
+    )
     p.set_defaults(func=cmd_jog)
 
     # calibrate
@@ -987,7 +1094,9 @@ def main() -> None:
     _add_robot_args(p)
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("-n", "--n-poses", type=int, default=20)
-    p.add_argument("-o", "--output", default=_timestamped_name("calibration_result.npz"))
+    p.add_argument(
+        "-o", "--output", default=_timestamped_name("calibration_result.npz")
+    )
     p.set_defaults(func=cmd_calibrate)
 
     args = parser.parse_args()

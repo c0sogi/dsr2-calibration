@@ -21,11 +21,13 @@ def _zyz_to_rotmat(a_deg: float, b_deg: float, g_deg: float) -> np.ndarray:
     ca, sa = np.cos(a), np.sin(a)
     cb, sb = np.cos(b), np.sin(b)
     cg, sg = np.cos(g), np.sin(g)
-    return np.array([
-        [ca * cb * cg - sa * sg, -ca * cb * sg - sa * cg, ca * sb],
-        [sa * cb * cg + ca * sg, -sa * cb * sg + ca * cg, sa * sb],
-        [-sb * cg, sb * sg, cb],
-    ])
+    return np.array(
+        [
+            [ca * cb * cg - sa * sg, -ca * cb * sg - sa * cg, ca * sb],
+            [sa * cb * cg + ca * sg, -sa * cb * sg + ca * cg, sa * sb],
+            [-sb * cg, sb * sg, cb],
+        ]
+    )
 
 
 def posx_to_matrix(posx: list[float] | np.ndarray) -> np.ndarray:
@@ -128,7 +130,9 @@ class HandEyeCalibrator:
         if self.n_samples < 3:
             raise ValueError(f"Need ≥3 samples, have {self.n_samples}")
 
-        R, t = cv2.calibrateHandEye(self._Rg, self._tg, self._Rt, self._tt, method=method)
+        R, t = cv2.calibrateHandEye(
+            self._Rg, self._tg, self._Rt, self._tt, method=method
+        )
         T = np.eye(4)
         T[:3, :3] = R
         T[:3, 3] = t.flatten()
@@ -146,12 +150,12 @@ class HandEyeCalibrator:
 
 # Doosan A0509 joint limits (degrees)
 _A0509_JOINT_LIMITS: list[tuple[float, float]] = [
-    (-360, 360),   # J1
-    (-125, 125),   # J2
-    (-150, 150),   # J3
-    (-360, 360),   # J4
-    (-125, 125),   # J5
-    (-360, 360),   # J6
+    (-360, 360),  # J1
+    (-125, 125),  # J2
+    (-150, 150),  # J3
+    (-360, 360),  # J4
+    (-125, 125),  # J5
+    (-360, 360),  # J6
 ]
 
 

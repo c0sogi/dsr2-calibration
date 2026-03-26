@@ -34,9 +34,7 @@ class BoardDetector:
 
     # ------------------------------------------------------------------
 
-    def detect(
-        self, image: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray] | None:
+    def detect(self, image: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
         """Return *(charuco_corners, charuco_ids)* or ``None``."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         corners, ids, _, _ = self._detector.detectBoard(gray)
@@ -119,9 +117,7 @@ def calibrate_camera(
         # so OpenCV skips its own homography-based initialisation.
         w, h = image_size
         f = float(max(w, h))
-        K0 = np.array([[f, 0, w / 2.0],
-                        [0, f, h / 2.0],
-                        [0, 0, 1.0]], dtype=np.float64)
+        K0 = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1.0]], dtype=np.float64)
         D0 = np.zeros((5, 1), dtype=np.float64)
         rms, K, D, _, _ = cv2.calibrateCamera(
             all_obj,

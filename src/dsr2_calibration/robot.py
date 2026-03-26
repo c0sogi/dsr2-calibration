@@ -21,8 +21,7 @@ _BRIDGE_SRC = Path(__file__).parent / "bridge.py"
 _BRIDGE_DEST = "/tmp/dsr2_calibration_bridge.py"
 
 _ROS_SETUP = (
-    "source /opt/ros/humble/setup.bash && "
-    "source /ros2_ws/install/setup.bash && "
+    "source /opt/ros/humble/setup.bash && source /ros2_ws/install/setup.bash && "
 )
 
 
@@ -60,8 +59,12 @@ class DSR2Robot:
         # Start bridge process
         self._proc: subprocess.Popen[str] = subprocess.Popen(
             [
-                "docker", "exec", "-i", container,
-                "bash", "-c",
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "bash",
+                "-c",
                 f"{_ROS_SETUP}python3 -u {_BRIDGE_DEST}"
                 f" --robot-id {robot_id} --robot-model {robot_model}",
             ],

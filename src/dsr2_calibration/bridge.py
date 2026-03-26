@@ -27,8 +27,8 @@ def _respond(data: dict) -> None:
 
 def main(robot_id: str = "dsr01", robot_model: str = "a0509") -> None:
     # ── ROS 2 + DSR_ROBOT2 initialisation ────────────────────────────
-    import rclpy  # type: ignore[import-not-found]
     import DR_init  # type: ignore[import-not-found]
+    import rclpy  # type: ignore[import-not-found]
 
     DR_init.__dsr__id = robot_id
     DR_init.__dsr__model = robot_model
