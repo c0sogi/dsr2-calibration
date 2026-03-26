@@ -127,18 +127,35 @@ def _add_board_args(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_pose_args(p: argparse.ArgumentParser, required: bool = False) -> None:
-    g = p.add_mutually_exclusive_group(required=required)
-    g.add_argument(
-        "-j",
-        "--joints",
-        help="joint angles in degrees, or d:delta (e.g. 0,0,90,0,90,0 or d:5,0,-5,0,0,0)",
-    )
-    g.add_argument(
-        "-x",
-        "--posx",
-        help="Cartesian [x,y,z,w,p,r] in mm/deg, or d:delta (e.g. -300,0,500,0,180,0 or d:100,0,0,0,0,0)",
-    )
+def _add_pose_args(
+    p: argparse.ArgumentParser, required: bool = False, multi: bool = False,
+) -> None:
+    if multi:
+        g = p.add_argument_group("center poses (may be repeated for multi-center)")
+        g.add_argument(
+            "-j",
+            "--joints",
+            action="append",
+            help="center joint angles in degrees (repeatable, e.g. -j 0,0,90,0,90,0 -j 10,0,85,0,95,0)",
+        )
+        g.add_argument(
+            "-x",
+            "--posx",
+            action="append",
+            help="center Cartesian [x,y,z,w,p,r] in mm/deg (repeatable)",
+        )
+    else:
+        g = p.add_mutually_exclusive_group(required=required)
+        g.add_argument(
+            "-j",
+            "--joints",
+            help="joint angles in degrees, or d:delta (e.g. 0,0,90,0,90,0 or d:5,0,-5,0,0,0)",
+        )
+        g.add_argument(
+            "-x",
+            "--posx",
+            help="Cartesian [x,y,z,w,p,r] in mm/deg, or d:delta (e.g. -300,0,500,0,180,0 or d:100,0,0,0,0,0)",
+        )
 
 
 def _add_robot_args(p: argparse.ArgumentParser) -> None:
@@ -185,6 +202,22 @@ def _release_capture(cap: cv2.VideoCapture) -> None:
         _active_caps.remove(cap)
     except ValueError:
         pass
+
+
+class _Tee:
+    """Write to both a file and the original stream."""
+
+    def __init__(self, file, original):
+        self._file = file
+        self._original = original
+
+    def write(self, data):
+        self._original.write(data)
+        self._file.write(data)
+
+    def flush(self):
+        self._original.flush()
+        self._file.flush()
 
 
 def _make_capture(camera_id: int, retries: int = 3):
@@ -264,6 +297,40 @@ def _resolve_center_joints(args: argparse.Namespace, robot: DSR2Robot) -> list[f
     return robot.get_posj()
 
 
+def _resolve_multi_center_joints(
+    args: argparse.Namespace, robot: DSR2Robot,
+) -> list[list[float]]:
+    """Resolve one or more center poses from repeated -j / -x flags."""
+    joints_list: list[str] | None = getattr(args, "joints", None)
+    posx_list: list[str] | None = getattr(args, "posx", None)
+
+    if joints_list and posx_list:
+        sys.exit("Cannot mix -j and -x; use one or the other.")
+
+    centers: list[list[float]] = []
+    if joints_list:
+        for j_str in joints_list:
+            vals, delta = _parse_pose(j_str)
+            if delta:
+                cur = robot.get_posj()
+                centers.append([c + d for c, d in zip(cur, vals)])
+            else:
+                centers.append(vals)
+    elif posx_list:
+        for x_str in posx_list:
+            vals, delta = _parse_pose(x_str)
+            if delta:
+                cur = robot.get_posx()
+                posx = [c + d for c, d in zip(cur, vals)]
+            else:
+                posx = vals
+            centers.append(robot.ikin(posx))
+
+    if not centers:
+        centers.append(robot.get_posj())
+    return centers
+
+
 # -- commands --------------------------------------------------------------
 
 
@@ -320,15 +387,19 @@ def cmd_dry_run(args: argparse.Namespace) -> None:
     try:
         with DSR2Robot(container=args.container, vel=safe_vel, acc=safe_acc) as robot:
             initial_joints = robot.get_posj()
-            center = _resolve_center_joints(args, robot)
+            centers = _resolve_multi_center_joints(args, robot)
             poses = generate_calibration_poses(
-                center,
+                centers if len(centers) > 1 else centers[0],
                 n_poses=args.n_poses,
                 wrist_range=args.wrist_range,
                 arm_range=args.arm_range,
             )
 
-            print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
+            n_centers = len(centers)
+            if n_centers > 1:
+                print(f"Dry run: {len(poses)} poses from {n_centers} centers at {safe_vel} deg/s")
+            else:
+                print(f"Dry run: {len(poses)} poses at {safe_vel} deg/s")
             print("Watch the robot and camera feed. Press 'q' to abort.\n")
 
             try:
@@ -990,147 +1061,168 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     board = _board_from_args(args)
     detector = BoardDetector(board)
 
-    # Offline mode: load from saved data directory
+    # Determine data directory early so we can log from the start
     if args.data_dir:
-        images, robot_poses = _load_data_dir(Path(args.data_dir))
+        data_dir = Path(args.data_dir)
     else:
-        # Online mode: collect from robot + camera
-        capture_fn, cap = _make_capture(args.camera)
-
-        # Check if GUI display is available
-        show_gui = True
-        try:
-            cv2.namedWindow("dsr2-calibration", cv2.WINDOW_AUTOSIZE)
-        except cv2.error:
-            show_gui = False
-
-        try:
-            with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
-                initial_joints = robot.get_posj()
-                center = _resolve_center_joints(args, robot)
-                poses = generate_calibration_poses(
-                    center,
-                    n_poses=args.n_poses,
-                    wrist_range=args.wrist_range,
-                    arm_range=args.arm_range,
-                )
-
-                # Save directory for raw data (images + robot poses)
-                data_dir = Path(args.output).parent / (
-                    Path(args.output).stem + "_data"
-                )
-                data_dir.mkdir(parents=True, exist_ok=True)
-
-                # Single pass: collect images + robot poses together
-                print(f"Collecting data ({len(poses)} poses)...")
-                images = []
-                robot_poses = []
-                poses_log: list[dict] = []
-                aborted = False
-                sample_idx = 0
-
-                try:
-                    for i, joints in enumerate(poses):
-                        robot.move_to_joints(joints)
-                        time.sleep(args.settle_time)
-                        frame = capture_fn()
-                        display = frame.copy()
-                        result = detector.detect(frame)
-                        if result is not None:
-                            corners, ids = result
-                            posx = robot.get_posx()
-                            posj = robot.get_posj()
-                            images.append(frame)
-                            robot_poses.append(posx_to_matrix(posx))
-
-                            # Save image and pose
-                            img_name = f"{sample_idx:03d}.png"
-                            cv2.imwrite(str(data_dir / img_name), frame)
-                            poses_log.append({
-                                "image": img_name,
-                                "posx": posx,
-                                "posj": posj,
-                            })
-                            sample_idx += 1
-                            status = (
-                                f"[{i + 1}/{len(poses)}] detected ({len(images)} total)"
-                            )
-                            if show_gui:
-                                cv2.aruco.drawDetectedCornersCharuco(
-                                    display, corners, ids, (0, 255, 0)
-                                )
-                                cv2.putText(
-                                    display,
-                                    status,
-                                    (10, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7,
-                                    (0, 255, 0),
-                                    2,
-                                )
-                            print(f"  {status}")
-                        else:
-                            status = f"[{i + 1}/{len(poses)}] board not found, skipped"
-                            if show_gui:
-                                cv2.putText(
-                                    display,
-                                    status,
-                                    (10, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7,
-                                    (0, 0, 255),
-                                    2,
-                                )
-                            print(f"  {status}")
-                        if show_gui:
-                            cv2.imshow("dsr2-calibration", display)
-                            if cv2.waitKey(500) & 0xFF == ord("q"):
-                                print("\nAborted by user.")
-                                aborted = True
-                                break
-                finally:
-                    print("Returning to initial position...")
-                    robot.move_to_joints(initial_joints)
-        finally:
-            _release_capture(cap)
-            if show_gui:
-                cv2.destroyAllWindows()
-
-        # Save poses log
-        if poses_log:
-            poses_path = data_dir / "poses.json"
-            poses_path.write_text(json.dumps(poses_log, indent=2))
-            print(f"Saved {len(poses_log)} samples to {data_dir}/")
-
-        if aborted:
-            sys.exit("Calibration aborted.")
-
-    if len(images) < 3:
-        sys.exit(
-            f"Only {len(images)} board detections (need >= 3). "
-            "Run 'dsr2-calibration preview' to check board visibility, "
-            "or adjust board position / center pose."
+        data_dir = Path(args.output).parent / (
+            Path(args.output).stem + "_data"
         )
+        data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: camera intrinsics from collected images
-    print(f"\n[1/2] Camera intrinsics ({len(images)} images)...")
-    K, D, rms = calibrate_camera(detector, images, min_corners=args.min_corners, max_rms=args.max_rms)
-    ext = ".json" if args.output.endswith(".json") else ".npz"
-    intrinsics_path = args.output.replace(ext, f"_intrinsics{ext}")
-    _save_intrinsics(intrinsics_path, K, D)
-    print(f"  RMS reprojection error: {rms:.4f}")
-    print(f"  Saved {intrinsics_path}")
+    # Console logging: tee stdout to data_dir/console.log
+    log_file = open(data_dir / "console.log", "w")
+    log_file.write(f"$ {' '.join(sys.argv)}\n\n")
+    _orig_stdout = sys.stdout
+    sys.stdout = _Tee(log_file, _orig_stdout)
 
-    # Step 2: hand-eye transform from same data
-    print("\n[2/2] Camera-to-gripper transform...")
-    calibrator = HandEyeCalibrator(detector, K, D)
-    for img, pose in zip(images, robot_poses):
-        calibrator.add_sample(img, pose)
+    try:
+        if args.data_dir:
+            images, robot_poses = _load_data_dir(data_dir)
+        else:
+            # Online mode: collect from robot + camera
+            capture_fn, cap = _make_capture(args.camera)
 
-    result = calibrator.calibrate()
-    result.save(args.output)
-    print(f"\nT_cam2gripper:\n{result.T_cam2gripper}")
-    print(f"Saved {args.output} ({result.n_samples} samples)")
+            # Check if GUI display is available
+            show_gui = True
+            try:
+                cv2.namedWindow("dsr2-calibration", cv2.WINDOW_AUTOSIZE)
+            except cv2.error:
+                show_gui = False
+
+            try:
+                with DSR2Robot(container=args.container, vel=args.vel, acc=args.acc) as robot:
+                    initial_joints = robot.get_posj()
+                    centers = _resolve_multi_center_joints(args, robot)
+                    poses = generate_calibration_poses(
+                        centers if len(centers) > 1 else centers[0],
+                        n_poses=args.n_poses,
+                        wrist_range=args.wrist_range,
+                        arm_range=args.arm_range,
+                    )
+
+                    # Single pass: collect images + robot poses together
+                    n_centers = len(centers)
+                    if n_centers > 1:
+                        print(f"Collecting data ({len(poses)} poses from {n_centers} centers)...")
+                    else:
+                        print(f"Collecting data ({len(poses)} poses)...")
+                    images = []
+                    robot_poses = []
+                    poses_log: list[dict] = []
+                    aborted = False
+                    sample_idx = 0
+
+                    try:
+                        for i, joints in enumerate(poses):
+                            robot.move_to_joints(joints)
+                            time.sleep(args.settle_time)
+                            frame = capture_fn()
+                            display = frame.copy()
+                            result = detector.detect(frame)
+                            if result is not None:
+                                corners, ids = result
+                                posx = robot.get_posx()
+                                posj = robot.get_posj()
+                                images.append(frame)
+                                robot_poses.append(posx_to_matrix(posx))
+
+                                # Save image and pose
+                                img_name = f"{sample_idx:03d}.png"
+                                cv2.imwrite(str(data_dir / img_name), frame)
+                                poses_log.append({
+                                    "image": img_name,
+                                    "posx": posx,
+                                    "posj": posj,
+                                })
+                                sample_idx += 1
+                                status = (
+                                    f"[{i + 1}/{len(poses)}] detected ({len(images)} total)"
+                                )
+                                if show_gui:
+                                    cv2.aruco.drawDetectedCornersCharuco(
+                                        display, corners, ids, (0, 255, 0)
+                                    )
+                                    cv2.putText(
+                                        display,
+                                        status,
+                                        (10, 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.7,
+                                        (0, 255, 0),
+                                        2,
+                                    )
+                                print(f"  {status}")
+                            else:
+                                status = f"[{i + 1}/{len(poses)}] board not found, skipped"
+                                if show_gui:
+                                    cv2.putText(
+                                        display,
+                                        status,
+                                        (10, 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.7,
+                                        (0, 0, 255),
+                                        2,
+                                    )
+                                print(f"  {status}")
+                            if show_gui:
+                                cv2.imshow("dsr2-calibration", display)
+                                if cv2.waitKey(500) & 0xFF == ord("q"):
+                                    print("\nAborted by user.")
+                                    aborted = True
+                                    break
+                    finally:
+                        print("Returning to initial position...")
+                        robot.move_to_joints(initial_joints)
+            finally:
+                _release_capture(cap)
+                if show_gui:
+                    cv2.destroyAllWindows()
+
+            # Save poses log
+            if poses_log:
+                poses_path = data_dir / "poses.json"
+                poses_path.write_text(json.dumps(poses_log, indent=2))
+                print(f"\nSaved {len(poses_log)} samples to {data_dir}/")
+
+            if aborted:
+                sys.exit("Calibration aborted.")
+
+        if len(images) < 3:
+            sys.exit(
+                f"Only {len(images)} board detections (need >= 3). "
+                "Run 'dsr2-calibration preview' to check board visibility, "
+                "or adjust board position / center pose."
+            )
+
+        # Result file names — saved inside data_dir
+        ext = ".json" if args.output.endswith(".json") else ".npz"
+        output_name = Path(args.output).name
+        intrinsics_name = output_name.replace(ext, f"_intrinsics{ext}")
+
+        # Step 1: camera intrinsics from collected images
+        print(f"\n[1/2] Camera intrinsics ({len(images)} images)...")
+        K, D, rms = calibrate_camera(detector, images, min_corners=args.min_corners, max_rms=args.max_rms)
+        intrinsics_path = str(data_dir / intrinsics_name)
+        _save_intrinsics(intrinsics_path, K, D)
+        print(f"  RMS reprojection error: {rms:.4f}")
+        print(f"  Saved {intrinsics_path}")
+
+        # Step 2: hand-eye transform from same data
+        print("\n[2/2] Camera-to-gripper transform...")
+        calibrator = HandEyeCalibrator(detector, K, D)
+        for img, pose in zip(images, robot_poses):
+            calibrator.add_sample(img, pose)
+
+        result = calibrator.calibrate()
+        result_path = str(data_dir / output_name)
+        result.save(result_path)
+        print(f"\nT_cam2gripper:\n{result.T_cam2gripper}")
+        print(f"Saved {result_path} ({result.n_samples} samples)")
+    finally:
+        sys.stdout = _orig_stdout
+        log_file.close()
 
 
 # -- CLI -------------------------------------------------------------------
@@ -1155,7 +1247,7 @@ def main() -> None:
         help="Test all poses at low speed with camera feed before calibrating",
     )
     _add_board_args(p)
-    _add_pose_args(p)
+    _add_pose_args(p, multi=True)
     _add_robot_args(p)
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("-n", "--n-poses", type=int, default=20)
@@ -1217,7 +1309,7 @@ def main() -> None:
     # calibrate
     p = sub.add_parser("calibrate", help="Full auto-calibration (camera + transform)")
     _add_board_args(p)
-    _add_pose_args(p)
+    _add_pose_args(p, multi=True)
     _add_robot_args(p)
     p.add_argument("--camera", type=int, default=0)
     p.add_argument("-n", "--n-poses", type=int, default=20)

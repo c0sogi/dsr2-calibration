@@ -178,14 +178,20 @@ _A0509_JOINT_LIMITS: list[tuple[float, float]] = [
 
 
 def generate_calibration_poses(
-    center_joints: list[float],
+    center_joints: list[float] | list[list[float]],
     n_poses: int = 20,
     wrist_range: float = 20.0,
     arm_range: float = 8.0,
     seed: int = 42,
     joint_limits: list[tuple[float, float]] | None = None,
 ) -> list[list[float]]:
-    """Generate *n_poses* joint configurations around *center_joints*.
+    """Generate *n_poses* joint configurations around one or more centers.
+
+    *center_joints* may be a single pose ``[j1,...,j6]`` or a list of
+    poses ``[[j1,...,j6], ...]``.  When multiple centers are given the
+    requested *n_poses* are distributed evenly across them so the
+    resulting set covers a wider range of rotations — this is critical
+    for a well-constrained hand-eye calibration.
 
     Wrist joints (4-6) are perturbed by ±*wrist_range*° and arm joints
     (1-3) by ±*arm_range*° to produce diverse camera viewpoints.
@@ -193,17 +199,32 @@ def generate_calibration_poses(
     """
     limits = joint_limits or _A0509_JOINT_LIMITS
     rng = np.random.default_rng(seed)
-    center = np.asarray(center_joints, dtype=float)
-    poses: list[list[float]] = [center.tolist()]
-    attempts = 0
-    while len(poses) < n_poses and attempts < n_poses * 10:
-        attempts += 1
-        offset = np.zeros(6)
-        offset[:3] = rng.uniform(-arm_range, arm_range, 3)
-        offset[3:] = rng.uniform(-wrist_range, wrist_range, 3)
-        candidate = center + offset
-        if all(lo <= j <= hi for j, (lo, hi) in zip(candidate, limits)):
-            poses.append(candidate.tolist())
+
+    # Normalise to list-of-centers
+    if np.ndim(center_joints) == 1:
+        centers = [np.asarray(center_joints, dtype=float)]
+    else:
+        centers = [np.asarray(c, dtype=float) for c in center_joints]
+
+    # Distribute n_poses across centers
+    n_per = max(1, n_poses // len(centers))
+    remainder = n_poses - n_per * len(centers)
+
+    poses: list[list[float]] = []
+    for i, center in enumerate(centers):
+        target = n_per + (1 if i < remainder else 0)
+        poses.append(center.tolist())
+        added = 1
+        attempts = 0
+        while added < target and attempts < target * 10:
+            attempts += 1
+            offset = np.zeros(6)
+            offset[:3] = rng.uniform(-arm_range, arm_range, 3)
+            offset[3:] = rng.uniform(-wrist_range, wrist_range, 3)
+            candidate = center + offset
+            if all(lo <= j <= hi for j, (lo, hi) in zip(candidate, limits)):
+                poses.append(candidate.tolist())
+                added += 1
     return poses
 
 
